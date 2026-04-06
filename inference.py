@@ -20,8 +20,8 @@ API_BASE_URL = os.environ.get("API_BASE_URL")
 MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
-TASKS = ["short_term_direction", "medium_term_direction", "long_term_direction"]
-ENV_TERMS = {"short_term_direction": "short", "medium_term_direction": "medium", "long_term_direction": "long"}
+TASKS = ["short_term_direction", "medium_term_direction", "long_term_conviction"]
+ENV_TERMS = {"short_term_direction": "short", "medium_term_direction": "medium", "long_term_conviction": "long"}
 
 
 def _parse_direction_and_conviction(text: str):
@@ -60,16 +60,17 @@ def run_evaluation(env_url, n_episodes):
 
         for i in range(n_episodes):
             try:
-                # 1. Reset Environment
-                reset_resp = requests.post(f"{env_url}/reset", json={"term": term}, timeout=30)
+                # 1. Reset Environment (use params, not json body)
+                reset_resp = requests.post(f"{env_url}/reset", params={"term": term}, timeout=30)
                 if reset_resp.status_code != 200:
                     continue
                 
                 data = reset_resp.json()
-                state = data.get("state", [])
-                session_id = data.get("session_id", "")
-                symbol = data.get("info", {}).get("symbol", "N/A")
-                date = data.get("info", {}).get("date", "N/A")
+                obs = data.get("observation", {})
+                state = obs
+                session_id = data.get("info", {}).get("session_id", "")
+                symbol = obs.get("symbol", "N/A")
+                date = obs.get("date", "N/A")
 
                 # 2. Build Prompt
                 system_prompt = "You are a quantitative analyst. Given technical indicators, predict the directional price move as Bullish, Bearish, or Neutral. Provide reasoning then output a JSON with 'reasoning', 'direction', and 'conviction' (0.0-1.0)."
@@ -88,10 +89,11 @@ def run_evaluation(env_url, n_episodes):
                 response = chat_completion.choices[0].message.content
                 direction, conviction = _parse_direction_and_conviction(response)
 
-                # 4. Step Environment
+                # 4. Step Environment (use params for session_id, json body for action)
                 step_resp = requests.post(
                     f"{env_url}/step", 
-                    json={"action": direction, "session_id": session_id}, 
+                    params={"session_id": session_id},
+                    json={"direction": direction, "conviction": conviction}, 
                     timeout=30
                 )
                 if step_resp.status_code != 200:
@@ -123,7 +125,7 @@ def run_evaluation(env_url, n_episodes):
             # In OpenEnv, the grader is usually a separate endpoint
             grader_resp = requests.post(
                 f"{env_url}/grader", 
-                json={"task": task_id, "results": episode_results},
+                json={"task_id": task_id, "episode_results": episode_results},
                 timeout=60
             )
             final_score = grader_resp.json().get("score", 0.0) if grader_resp.status_code == 200 else 0.0
