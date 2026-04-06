@@ -1,0 +1,96 @@
+name: IndicatorsEnv
+version: 1.0.0
+description: >
+  RL environment for NSE (Indian) stock market technical indicators prediction.
+  An AI agent receives a rich indicator snapshot (RSI, MACD, ADX, Bollinger Bands,
+  VWAP, MFI, CMF, pivot points) for a real NSE stock on a real historical date,
+  and must predict the directional price move over a configurable forward window.
+  Ground truth is computed from actual historical price data.
+
+author: bawsi99
+license: MIT
+
+tags:
+  - finance
+  - stock-market
+  - technical-analysis
+  - reinforcement-learning
+  - openenv
+
+tasks:
+  - id: short_term_direction
+    name: "Short-term Direction (Easy)"
+    description: >
+      Predict 5-day forward price direction from technical indicators.
+      Threshold: ±1.0%. More Neutral outcomes expected.
+    difficulty: easy
+    term: short
+
+  - id: medium_term_direction
+    name: "Medium-term Direction (Medium)"
+    description: >
+      Predict 20-day forward price direction from technical indicators.
+      Threshold: ±2.5%. Balanced Bullish/Bearish/Neutral distribution.
+    difficulty: medium
+    term: medium
+
+  - id: long_term_conviction
+    name: "Long-term Conviction (Hard)"
+    description: >
+      Predict 60-day forward price direction AND demonstrate calibrated conviction.
+      Threshold: ±5.0%. Score requires both correct direction AND conviction >= 0.7.
+      Overconfident wrong predictions are penalized.
+    difficulty: hard
+    term: long
+
+endpoints:
+  reset: "POST /reset"
+  step: "POST /step"
+  state: "GET /state"
+  tasks: "GET /tasks"
+  grader: "POST /grader"
+  baseline: "GET /baseline"
+  health: "GET /health"
+
+action_space:
+  type: object
+  properties:
+    direction:
+      type: string
+      enum: [Bullish, Bearish, Neutral]
+      description: Predicted price direction over the forward window
+    conviction:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      description: Agent confidence in the prediction (0=uncertain, 1=certain)
+
+observation_space:
+  type: object
+  properties:
+    symbol:
+      type: string
+      description: NSE stock ticker (e.g. RELIANCE, TCS, INFY)
+    date:
+      type: string
+      format: date
+      description: Observation date (YYYY-MM-DD)
+    term:
+      type: string
+      enum: [SHORT, MEDIUM, LONG]
+    current_price:
+      type: number
+      description: Closing price on observation date
+    indicators:
+      type: object
+      description: >
+        Nested indicator dict with: moving_averages, rsi, macd,
+        bollinger_bands, adx, stochastic, volatility, enhanced_volume, pivot_points
+
+reward:
+  min: -0.1
+  max: 1.1
+  description: >
+    1.0 for correct direction. Shaped upward for confident correct predictions
+    (conviction >= 0.6). Penalized (-0.1) for overconfident wrong predictions
+    (conviction >= 0.8). Hard task uses stricter grading.

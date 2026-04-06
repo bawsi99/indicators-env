@@ -1,0 +1,1046 @@
+{
+  "160": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-160",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": {
+      "overall_accuracy": 0.32,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.36,
+        "Bearish": 0.0,
+        "Neutral": 0.7
+      },
+      "precision": {
+        "Bullish": 0.5625,
+        "Bearish": 0.0,
+        "Neutral": 0.21875
+      },
+      "recall": {
+        "Bullish": 0.36,
+        "Bearish": 0.0,
+        "Neutral": 0.7
+      },
+      "f1_score": {
+        "Bullish": 0.43902439024390244,
+        "Bearish": 0.0,
+        "Neutral": 0.3333333333333333
+      },
+      "macro_f1": 0.25745257452574527,
+      "weighted_f1": 0.2861788617886179,
+      "confusion_matrix": [
+        [
+          9,
+          2,
+          14
+        ],
+        [
+          4,
+          0,
+          11
+        ],
+        [
+          3,
+          0,
+          7
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "finetuned_grpo": {
+      "overall_accuracy": 0.24,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.44,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.36666666666666664,
+        "Bearish": 0.05263157894736842,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.44,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4,
+        "Bearish": 0.058823529411764705,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.15294117647058825,
+      "weighted_f1": 0.21764705882352942,
+      "confusion_matrix": [
+        [
+          11,
+          14,
+          0
+        ],
+        [
+          13,
+          1,
+          1
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": -0.08000000000000002,
+    "delta_macro_f1": -0.10451139805515702
+  },
+  "180": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-180",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.26,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.44,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.36666666666666664,
+        "Bearish": 0.1,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.44,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4,
+        "Bearish": 0.11428571428571428,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.17142857142857146,
+      "weighted_f1": 0.23428571428571426,
+      "confusion_matrix": [
+        [
+          11,
+          14,
+          0
+        ],
+        [
+          13,
+          2,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "200": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-200",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.26,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.44,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.36666666666666664,
+        "Bearish": 0.1,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.44,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4,
+        "Bearish": 0.11428571428571428,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.17142857142857146,
+      "weighted_f1": 0.23428571428571426,
+      "confusion_matrix": [
+        [
+          11,
+          14,
+          0
+        ],
+        [
+          13,
+          2,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "220": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-220",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.32,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.52,
+        "Bearish": 0.2,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.41935483870967744,
+        "Bearish": 0.15789473684210525,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.52,
+        "Bearish": 0.2,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4642857142857143,
+        "Bearish": 0.17647058823529413,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.2135854341736695,
+      "weighted_f1": 0.2850840336134454,
+      "confusion_matrix": [
+        [
+          13,
+          12,
+          0
+        ],
+        [
+          12,
+          3,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "240": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-240",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.32,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.52,
+        "Bearish": 0.2,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.41935483870967744,
+        "Bearish": 0.15789473684210525,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.52,
+        "Bearish": 0.2,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4642857142857143,
+        "Bearish": 0.17647058823529413,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.2135854341736695,
+      "weighted_f1": 0.2850840336134454,
+      "confusion_matrix": [
+        [
+          13,
+          12,
+          0
+        ],
+        [
+          12,
+          3,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "260": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-260",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.3,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.52,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.40625,
+        "Bearish": 0.1111111111111111,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.52,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.45614035087719296,
+        "Bearish": 0.12121212121212122,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.1924508240297714,
+      "weighted_f1": 0.26443381180223285,
+      "confusion_matrix": [
+        [
+          13,
+          12,
+          0
+        ],
+        [
+          13,
+          2,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "280": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-280",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.3,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.52,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.40625,
+        "Bearish": 0.1111111111111111,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.52,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.45614035087719296,
+        "Bearish": 0.12121212121212122,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.1924508240297714,
+      "weighted_f1": 0.26443381180223285,
+      "confusion_matrix": [
+        [
+          13,
+          12,
+          0
+        ],
+        [
+          13,
+          2,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "300": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-300",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.3,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.56,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.4117647058823529,
+        "Bearish": 0.0625,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.56,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4745762711864407,
+        "Bearish": 0.06451612903225806,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.17969746673956624,
+      "weighted_f1": 0.2566429743028978,
+      "confusion_matrix": [
+        [
+          14,
+          11,
+          0
+        ],
+        [
+          14,
+          1,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "460": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-460",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.3,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.56,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.4117647058823529,
+        "Bearish": 0.0625,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.56,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4745762711864407,
+        "Bearish": 0.06451612903225806,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.17969746673956624,
+      "weighted_f1": 0.2566429743028978,
+      "confusion_matrix": [
+        [
+          14,
+          11,
+          0
+        ],
+        [
+          14,
+          1,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "480": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-480",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.3,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.56,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.4117647058823529,
+        "Bearish": 0.0625,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.56,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4745762711864407,
+        "Bearish": 0.06451612903225806,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.17969746673956624,
+      "weighted_f1": 0.2566429743028978,
+      "confusion_matrix": [
+        [
+          14,
+          11,
+          0
+        ],
+        [
+          14,
+          1,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "500": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-500",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.28,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.52,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.3939393939393939,
+        "Bearish": 0.058823529411764705,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.52,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4482758620689655,
+        "Bearish": 0.0625,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.17025862068965517,
+      "weighted_f1": 0.24288793103448278,
+      "confusion_matrix": [
+        [
+          13,
+          12,
+          0
+        ],
+        [
+          14,
+          1,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "520": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-520",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.28,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.52,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.3939393939393939,
+        "Bearish": 0.058823529411764705,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.52,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4482758620689655,
+        "Bearish": 0.0625,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.17025862068965517,
+      "weighted_f1": 0.24288793103448278,
+      "confusion_matrix": [
+        [
+          13,
+          12,
+          0
+        ],
+        [
+          14,
+          1,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "540": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-540",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.3,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.56,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.4117647058823529,
+        "Bearish": 0.0625,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.56,
+        "Bearish": 0.06666666666666667,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4745762711864407,
+        "Bearish": 0.06451612903225806,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.17969746673956624,
+      "weighted_f1": 0.2566429743028978,
+      "confusion_matrix": [
+        [
+          14,
+          11,
+          0
+        ],
+        [
+          14,
+          1,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "560": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-560",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.3,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.52,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.40625,
+        "Bearish": 0.1111111111111111,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.52,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.45614035087719296,
+        "Bearish": 0.12121212121212122,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.1924508240297714,
+      "weighted_f1": 0.26443381180223285,
+      "confusion_matrix": [
+        [
+          13,
+          12,
+          0
+        ],
+        [
+          13,
+          2,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "580": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-580",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.32,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.56,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.42424242424242425,
+        "Bearish": 0.11764705882352941,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.56,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.4827586206896552,
+        "Bearish": 0.125,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.20258620689655174,
+      "weighted_f1": 0.2788793103448276,
+      "confusion_matrix": [
+        [
+          14,
+          11,
+          0
+        ],
+        [
+          13,
+          2,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  },
+  "600": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_path": "/content/drive/MyDrive/indicators_grpo_v2/checkpoint-600",
+    "n_eval": 50,
+    "term": "medium",
+    "baseline_zeroshot": null,
+    "finetuned_grpo": {
+      "overall_accuracy": 0.3,
+      "n_eval": 50,
+      "by_class_accuracy": {
+        "Bullish": 0.52,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "precision": {
+        "Bullish": 0.40625,
+        "Bearish": 0.1111111111111111,
+        "Neutral": 0.0
+      },
+      "recall": {
+        "Bullish": 0.52,
+        "Bearish": 0.13333333333333333,
+        "Neutral": 0.0
+      },
+      "f1_score": {
+        "Bullish": 0.45614035087719296,
+        "Bearish": 0.12121212121212122,
+        "Neutral": 0.0
+      },
+      "macro_f1": 0.1924508240297714,
+      "weighted_f1": 0.26443381180223285,
+      "confusion_matrix": [
+        [
+          13,
+          12,
+          0
+        ],
+        [
+          13,
+          2,
+          0
+        ],
+        [
+          6,
+          4,
+          0
+        ]
+      ],
+      "confusion_matrix_labels": [
+        "Bullish",
+        "Bearish",
+        "Neutral"
+      ],
+      "class_distribution": {
+        "Bullish": 25,
+        "Bearish": 15,
+        "Neutral": 10
+      }
+    },
+    "delta_accuracy": 0,
+    "delta_macro_f1": 0
+  }
+}
