@@ -183,14 +183,28 @@ curl http://localhost:7860/health
 
 ### Baseline Inference (OpenAI API)
 ```bash
-export OPENAI_API_KEY=sk-your-key
-python baseline.py --env_url http://localhost:7860 --n_episodes 10
+export API_BASE_URL=https://api-inference.huggingface.co/v1
+export MODEL_NAME=meta-llama/Llama-3.1-8B-Instruct
+export HF_TOKEN=hf_your_token
+python inference.py --env_url http://localhost:7860 --n_episodes 5
+```
+
+### Fine-Tuned Agent Inference (Qwen-7B GRPO)
+To run your fine-tuned model against a live IndicatorsEnv server, use the `inference.py` script. 
+*Note: This script loads the 7B model locally. It requires ~24GB VRAM (A100/H100) or an Apple M-series Mac with 32GB+ Unified Memory.*
+
+```bash
+# 1. Start the environment locally
+cd env && python indicators_env.py &
+
+# 2. Run the agent (In a new terminal)
+python inference.py --env_url http://localhost:7860 --n_episodes 5
 ```
 
 ### GRPO Training
 ```bash
 python training/train_grpo.py \
-    --model_id "Qwen/Qwen2.5-1.5B-Instruct" \
+    --model_id "Qwen/Qwen2.5-7B-Instruct" \
     --output_dir "./outputs/indicators_grpo" \
     --num_episodes 1000 \
     --batch_size 8 \
@@ -208,6 +222,7 @@ hackathon/
 ├── requirements.txt
 ├── README.md
 ├── baseline.py               # OpenAI API baseline script
+├── inference.py              # NEW: Standalone fine-tuned agent script
 ├── env/
 │   ├── data_loader.py        # yfinance OHLCV + 25+ indicator suite + ground truth
 │   ├── indicators_env.py     # FastAPI + WebSocket OpenEnv server (v2.0.0)
@@ -215,7 +230,8 @@ hackathon/
 ├── training/
 │   └── train_grpo.py         # TRL GRPO + QLoRA fine-tuning script
 ├── evaluation/
-│   └── eval_finetuned.py     # Zero-shot vs fine-tuned accuracy comparison
+│   ├── eval_finetuned.py     # Zero-shot vs fine-tuned accuracy comparison
+│   └── plot_learning_curve.py # Learning curve visualization tool
 └── notebooks/
     └── demo.ipynb            # End-to-end Colab walkthrough
 ```
