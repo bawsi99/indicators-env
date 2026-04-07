@@ -16,8 +16,8 @@ import argparse
 from openai import OpenAI
 
 # --- Configuration (Mandatory per Hackathon Spec) ---
-API_BASE_URL = os.environ.get("API_BASE_URL")
-MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://api-inference.huggingface.co/v1/")
+MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 TASKS = ["short_term_direction", "medium_term_direction", "long_term_conviction"]
@@ -149,8 +149,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Mandatory Check: Environment Variables
-    if not API_BASE_URL or not HF_TOKEN:
-        print("❌ Error: API_BASE_URL and HF_TOKEN must be set as environment variables.")
+    if not HF_TOKEN:
+        print("❌ Error: HF_TOKEN must be set as an environment variable.")
         exit(1)
 
     run_evaluation(args.env_url, args.n_episodes)
