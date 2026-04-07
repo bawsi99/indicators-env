@@ -17,7 +17,7 @@ from openai import OpenAI
 
 # --- Configuration (Mandatory per Hackathon Spec) ---
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api-inference.huggingface.co/v1/")
-MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
+MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 TASKS = ["short_term_direction", "medium_term_direction", "long_term_conviction"]

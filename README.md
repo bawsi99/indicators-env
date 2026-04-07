@@ -149,7 +149,7 @@ docker run -p 7860:7860 indicators-env
 ### Baseline Agent Inference
 ```bash
 export API_BASE_URL=https://api-inference.huggingface.co/v1/
-export MODEL_NAME=meta-llama/Llama-2-7b-chat-hf
+export MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
 export HF_TOKEN=hf_your_token
 
 python inference.py --env_url http://localhost:7860 --n_episodes 5
