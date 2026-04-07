@@ -56,7 +56,7 @@ def run_evaluation(env_url, n_episodes):
         episode_results = []
         
         # [START] Log
-        print(f"[START] task={task_id} n_episodes={n_episodes}")
+        print(f"[START] task={task_id} env=IndicatorsEnv model={MODEL_NAME}", flush=True)
 
         for i in range(n_episodes):
             try:
@@ -113,7 +113,7 @@ def run_evaluation(env_url, n_episodes):
                 })
 
                 # [STEP] Log
-                print(f"[STEP] episode={i+1} symbol={symbol} date={date} direction={direction} conviction={conviction} reward={reward:.4f} ground_truth={ground_truth}")
+                print(f"[STEP] step={i+1} action={direction} reward={reward:.4f} done=True error=None", flush=True)
 
             except Exception as e:
                 # Never crash the entire run
@@ -131,9 +131,14 @@ def run_evaluation(env_url, n_episodes):
             final_score = grader_resp.json().get("score", 0.0) if grader_resp.status_code == 200 else 0.0
             
             # [END] Log
-            print(f"[END] task={task_id} score={final_score:.4f} episodes={len(episode_results)}")
+            rewards_list = [ep["reward"] for ep in episode_results]
+            steps_taken = len(episode_results)
+            success = final_score > 0.0
+            print(f"[END] success={success} steps={steps_taken} score={final_score:.4f} rewards={rewards_list}", flush=True)
         except:
-            print(f"[END] task={task_id} score=0.0000 episodes={len(episode_results)}")
+            rewards_list = [ep["reward"] for ep in episode_results]
+            steps_taken = len(episode_results)
+            print(f"[END] success=False steps={steps_taken} score=0.0000 rewards={rewards_list}", flush=True)
 
 
 if __name__ == "__main__":
