@@ -157,17 +157,22 @@ class GraderRequest(BaseModel):
 
 class GraderResult(BaseModel):
     task_id: str
-    score: float = Field(..., ge=0.0, le=1.0)
+    score: float = Field(..., gt=0.0, lt=1.0)
     num_episodes: int
     breakdown: Dict[str, Any]
 
 
 # ─── Grader Logic ─────────────────────────────────────────────────────────────
 
+def _clamp_score(score: float) -> float:
+    """Clamp to strictly open interval (0, 1) as required by the validator."""
+    return round(max(0.001, min(0.999, score)), 4)
+
+
 def grade_task(task_id: str, episode_results: List[Dict[str, Any]]) -> GraderResult:
-    """Deterministic grader for all 3 tasks. Returns a 0.0–1.0 score."""
+    """Deterministic grader for all 3 tasks. Returns a score in (0, 1) exclusive."""
     if not episode_results:
-        return GraderResult(task_id=task_id, score=0.0, num_episodes=0, breakdown={})
+        return GraderResult(task_id=task_id, score=0.001, num_episodes=0, breakdown={})
 
     n = len(episode_results)
 
@@ -177,7 +182,7 @@ def grade_task(task_id: str, episode_results: List[Dict[str, Any]]) -> GraderRes
             1 for r in episode_results
             if r.get("predicted", "").capitalize() == r.get("ground_truth", "").capitalize()
         )
-        score = correct / n
+        score = _clamp_score(correct / n)
         breakdown = {"correct": correct, "total": n, "metric": "accuracy"}
 
     elif task_id == "medium_term_direction":
@@ -191,7 +196,7 @@ def grade_task(task_id: str, episode_results: List[Dict[str, Any]]) -> GraderRes
             weighted_total += w
             if pred == gt:
                 weighted_score += w
-        score = min(1.0, weighted_score / weighted_total) if weighted_total > 0 else 0.0
+        score = _clamp_score(min(1.0, weighted_score / weighted_total) if weighted_total > 0 else 0.0)
         breakdown = {"weighted_score": round(weighted_score, 3), "weighted_total": round(weighted_total, 3), "metric": "weighted_accuracy"}
 
     elif task_id == "long_term_conviction":
@@ -211,8 +216,8 @@ def grade_task(task_id: str, episode_results: List[Dict[str, Any]]) -> GraderRes
             else:
                 per_episode_scores.append(0.0)
         raw = sum(per_episode_scores) / n
-        # Normalize from [-0.1, 1.0] to [0.0, 1.0]
-        score = max(0.0, min(1.0, (raw + 0.1) / 1.1))
+        # Normalize from [-0.1, 1.0] to (0, 1) exclusive
+        score = _clamp_score((raw + 0.1) / 1.1)
         breakdown = {"per_episode_scores": per_episode_scores, "raw_mean": round(raw, 4), "metric": "conviction_calibrated_accuracy"}
 
     else:
