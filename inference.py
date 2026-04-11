@@ -54,90 +54,108 @@ def run_evaluation(env_url, n_episodes):
     for task_id in TASKS:
         term = ENV_TERMS[task_id]
         episode_results = []
-        
+
         # [START] Log
         print(f"[START] task={task_id} env=IndicatorsEnv model={MODEL_NAME}", flush=True)
 
         for i in range(n_episodes):
             try:
-                # 1. Reset Environment (use params, not json body)
-                reset_resp = requests.post(f"{env_url}/reset", params={"term": term}, timeout=30)
+                # 1. Reset Environment — 60s timeout for cold-start yfinance fetch
+                reset_resp = requests.post(f"{env_url}/reset", params={"term": term}, timeout=60)
                 if reset_resp.status_code != 200:
                     continue
-                
+
                 data = reset_resp.json()
                 obs = data.get("observation", {})
-                state = obs
                 session_id = data.get("info", {}).get("session_id", "")
-                symbol = obs.get("symbol", "N/A")
-                date = obs.get("date", "N/A")
+                done = False
+                step_num = 0
+                prev_context = ""  # feedback from previous step for sequential prompting
 
-                # 2. Build Prompt
-                system_prompt = "You are a quantitative analyst. Given technical indicators, predict the directional price move as Bullish, Bearish, or Neutral. Provide reasoning then output a JSON with 'reasoning', 'direction', and 'conviction' (0.0-1.0)."
-                user_prompt = f"Technical Indicators for {symbol} on {date}: {state}\n\nPredict the directional move."
+                # 2. Multi-step loop: one episode = 5 consecutive trading days
+                while not done:
+                    step_num += 1
+                    symbol = obs.get("symbol", "N/A") if isinstance(obs, dict) else "N/A"
+                    date   = obs.get("date",   "N/A") if isinstance(obs, dict) else "N/A"
 
-                # 3. Call LLM (using mandatory OpenAI Client)
-                chat_completion = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    max_tokens=256,
-                    temperature=0.7
-                )
-                response = chat_completion.choices[0].message.content
-                direction, conviction = _parse_direction_and_conviction(response)
+                    # Build Prompt — include previous step result at steps 2+
+                    system_prompt = (
+                        "You are a quantitative analyst. Given technical indicators, "
+                        "predict the directional price move as Bullish, Bearish, or Neutral. "
+                        "Respond with JSON: {\"direction\": \"Bullish\"|\"Bearish\"|\"Neutral\", \"conviction\": <0.0-1.0>}"
+                    )
+                    context_note = f"\nPrevious step result: {prev_context}\n" if prev_context else ""
+                    user_prompt = (
+                        f"[Step {step_num}/5] Stock: {symbol} | Date: {date}\n"
+                        f"{context_note}"
+                        f"Indicators: {obs}\n\nPredict the {term}-term direction."
+                    )
 
-                # 4. Step Environment (use params for session_id, json body for action)
-                step_resp = requests.post(
-                    f"{env_url}/step", 
-                    params={"session_id": session_id},
-                    json={"direction": direction, "conviction": conviction}, 
-                    timeout=30
-                )
-                if step_resp.status_code != 200:
-                    continue
-                
-                step_data = step_resp.json()
-                reward = step_data.get("reward", 0.0)
-                ground_truth = step_data.get("info", {}).get("ground_truth", "N/A")
+                    # 3. Call LLM (using mandatory OpenAI Client)
+                    chat_completion = client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user",   "content": user_prompt},
+                        ],
+                        max_tokens=128,
+                        temperature=0.7,
+                    )
+                    response = chat_completion.choices[0].message.content or ""
+                    direction, conviction = _parse_direction_and_conviction(response)
 
-                # Track result for grader
-                episode_results.append({
-                    "episode": i + 1,
-                    "direction": direction,
-                    "conviction": conviction,
-                    "reward": reward,
-                    "ground_truth": ground_truth
-                })
+                    # 4. Step Environment
+                    step_resp = requests.post(
+                        f"{env_url}/step",
+                        params={"session_id": session_id},
+                        json={"direction": direction, "conviction": conviction},
+                        timeout=30,
+                    )
+                    if step_resp.status_code != 200:
+                        break
 
-                # [STEP] Log
-                print(f"[STEP] step={i+1} action={direction} reward={reward:.4f} done=True error=None", flush=True)
+                    step_data    = step_resp.json()
+                    reward       = step_data.get("reward", 0.0)
+                    done         = step_data.get("done", True)
+                    ground_truth = step_data.get("info", {}).get("ground_truth", "N/A")
+                    obs          = step_data.get("observation") or obs
 
-            except Exception as e:
+                    # Update context for next step
+                    correct_str  = "correct" if direction == ground_truth else "wrong"
+                    prev_context = f"predicted {direction}, actual was {ground_truth} ({correct_str}), reward {reward:.2f}"
+
+                    # Track result for grader — key MUST be "predicted" (not "direction")
+                    episode_results.append({
+                        "predicted":    direction,
+                        "conviction":   conviction,
+                        "reward":       reward,
+                        "ground_truth": ground_truth,
+                    })
+
+                    # [STEP] Log — done reflects actual value, NOT hardcoded True
+                    print(f"[STEP] step={step_num} action={direction} reward={reward:.4f} done={done} error=None", flush=True)
+
+            except Exception:
                 # Never crash the entire run
                 continue
 
         # 5. Finalize Task (Call Grader)
         try:
-            # Note: We provide the grader with the episode results for that task
-            # In OpenEnv, the grader is usually a separate endpoint
             grader_resp = requests.post(
-                f"{env_url}/grader", 
+                f"{env_url}/grader",
                 json={"task_id": task_id, "episode_results": episode_results},
-                timeout=60
+                timeout=60,
             )
             final_score = grader_resp.json().get("score", 0.0) if grader_resp.status_code == 200 else 0.0
-            
+
             # [END] Log
             rewards_list = [ep["reward"] for ep in episode_results]
-            steps_taken = len(episode_results)
-            success = final_score > 0.0
+            steps_taken  = len(episode_results)
+            success      = final_score > 0.0
             print(f"[END] success={success} steps={steps_taken} score={final_score:.4f} rewards={rewards_list}", flush=True)
-        except:
+        except Exception:
             rewards_list = [ep["reward"] for ep in episode_results]
-            steps_taken = len(episode_results)
+            steps_taken  = len(episode_results)
             print(f"[END] success=False steps={steps_taken} score=0.0000 rewards={rewards_list}", flush=True)
 
 

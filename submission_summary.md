@@ -45,27 +45,28 @@ I built, containerized, and deployed the entire pipeline, achieving 100% complia
 
 The hackathon only requires building the environment and running a baseline API evaluation. I went further: I used `IndicatorsEnv` to run a real **GRPO Reinforcement Learning training loop**, fine-tuning a `Qwen2.5-7B-Instruct` model using Hugging Face's TRL library.
 
-### The Core Problem Solved: Majority-Class Prediction Bias
+### The Core Problem Targeted: Majority-Class Prediction Bias
 
 Out-of-the-box LLMs exhibit a systematic structural bias on financial data: when prompted zero-shot, they often collapse into a single "safe" prediction (like always guessing "Neutral"). This produces acceptable overall accuracy while completely failing to identify the minority signals (Bullish/Bearish) — which are precisely the signals a trading agent needs.
 
 ### Results Table (Held-Out Episodes, 7B Model, QLoRA GRPO)
 
-| Metric | Zero-Shot Baseline | GRPO Fine-Tuned (7B) | Δ |
+| Metric | Zero-Shot Baseline | GRPO Fine-Tuned (Step 220) | Δ |
 |---|---|---|---|
 | **Overall Accuracy** | 0.320 | 0.320 | +0.000 |
-| **Neutral Recall** | 0.700 | 0.000 | *-0.700* |
-| **Bearish Recall** | 0.000 | 0.200 | **+0.200 ✅** |
-| **Bullish Recall** | **0.360** | **0.520** | **+0.160 ✅** |
+| **Neutral Recall** | 0.700 | 0.000 | -0.700 |
+| **Bearish Recall** | 0.000 | 0.200 | **+0.200** |
+| **Bullish Recall** | 0.360 | 0.520 | **+0.160** |
+| **Macro F1** | 0.257 | 0.213 | -0.044 |
 
-> **The RL Success:** While raw accuracy stayed level, the reinforcement learning successfully **broke the mode collapse**. The Zero-Shot model achieved 0.00 recall on Bearish setups, relying almost exclusively on "Neutral" guesses (70% recall). After GRPO training with an explicitly **symmetric, anti-bias reward function**, the agent sacrificed "safe" Neutral guesses to actively hunt for Bullish and Bearish momentum, proving the OpenEnv reward mechanism directly alters the model's structural logic.
+> **What the GRPO training achieved:** The reward mechanism directly altered the model's structural behavior. Bullish recall improved +16pp (36%→52%) and Bearish recall improved +20pp (0%→20%) at the peak checkpoint (step 220). However, the model over-corrected — Neutral recall dropped to 0 across all 14 evaluated checkpoints (steps 160–600), meaning the agent entirely stopped predicting "Neutral". Macro F1 moved from 0.257 (baseline) to 0.213 (step 220), reflecting the precision cost of forced directional commitment. This confirms the OpenEnv reward mechanism directly influences structural model behavior. The next iteration targets balanced recall via explicit Neutral-class reward weighting.
 
 ### 4b. Learning Curve Evidence
 
-The logged training trajectory explicitly demonstrates the model grappling with its new objective:
-*   Reached **Peak Balanced State at Step 220**.
-*   Maintained stable performance through Step 600 with zero policy decay.
-*   Final model achieved **56% Bullish Recall** (from 36% baseline).
+The logged training trajectory demonstrates the model shifting away from Neutral-dominant behavior:
+*   **Peak directional performance at Step 220**: Bullish Recall 52%, Bearish Recall 20%.
+*   Neutral recall dropped to 0 at step 160 and remained there through step 600 — reward function needs stronger Neutral-class incentivization to achieve true three-class balance.
+*   Overall accuracy held flat at 0.32 throughout training (same as zero-shot baseline).
 
 *(Note: See `final_evaluation_curve.png` in the project repository for the visual plot of these dynamics).*
 

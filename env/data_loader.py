@@ -31,7 +31,7 @@ TERM_WINDOWS: Dict[str, int] = {
     "intraday": 1,
     "short": 5,
     "medium": 20,
-    "long": 30,
+    "long": 60,
 }
 
 TERM_THRESHOLDS: Dict[str, float] = {
@@ -347,6 +347,71 @@ def build_observation(symbol: str, date: str, term: str = "medium") -> Optional[
         "current_price": round(cp, 2),
         "indicators": indicators,
     }
+
+
+def build_multi_step_episode(
+    symbol: str,
+    start_date: str,
+    n_steps: int = 5,
+    term: str = "medium",
+    lookback_days: int = 300,
+) -> Optional[List[Tuple[Dict[str, Any], str]]]:
+    """
+    Build n_steps consecutive (observation_dict, ground_truth) pairs for one stock.
+    Single OHLCV fetch per call — no per-step API calls.
+    Returns list of n_steps tuples, or None if data is insufficient.
+    Each step: indicators computed from data UP TO that trading day.
+    Each GT: N-day forward return label from that trading day.
+    """
+    window = TERM_WINDOWS.get(term, 20)
+    threshold = TERM_THRESHOLDS.get(term, 0.025)
+    try:
+        start_dt = pd.to_datetime(start_date)
+        fetch_start = (start_dt - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        fetch_end   = (start_dt + timedelta(days=n_steps * 3 + window + 20)).strftime("%Y-%m-%d")
+
+        ticker = yf.Ticker(f"{symbol}.NS")
+        full_df = ticker.history(start=fetch_start, end=fetch_end, auto_adjust=True)
+        if full_df.empty or len(full_df) < lookback_days // 2:
+            return None
+        full_df.columns = full_df.columns.str.lower()
+        full_df = full_df[["open", "high", "low", "close", "volume"]].dropna()
+        full_df.index = pd.to_datetime(full_df.index).tz_localize(None)
+
+        # n_steps consecutive trading days starting at or after start_date
+        available_dates = full_df[full_df.index >= start_dt].index[:n_steps]
+        if len(available_dates) < n_steps:
+            return None
+
+        steps = []
+        for step_dt in available_dates:
+            hist = full_df[full_df.index <= step_dt].tail(lookback_days)
+            if len(hist) < 60:
+                return None
+            indicators = compute_indicators(hist)
+            cp = float(hist["close"].iloc[-1])
+            obs_dict = {
+                "symbol": symbol,
+                "date": step_dt.strftime("%Y-%m-%d"),
+                "term": term.upper(),
+                "current_price": round(cp, 2),
+                "indicators": indicators,
+            }
+            # GT: N-day forward return from this step's date
+            future = full_df[full_df.index > step_dt].head(window + 5)
+            if len(future) < window:
+                return None
+            entry = float(hist["close"].iloc[-1])
+            exit_ = float(future["close"].iloc[min(window, len(future)) - 1])
+            fwd_ret = (exit_ - entry) / entry
+            gt = "Bullish" if fwd_ret > threshold else "Bearish" if fwd_ret < -threshold else "Neutral"
+            steps.append((obs_dict, gt))
+
+        return steps if len(steps) == n_steps else None
+
+    except Exception as e:
+        logger.warning(f"[DataLoader] build_multi_step_episode failed for {symbol}/{start_date}: {e}")
+        return None
 
 
 def generate_scenario_pool(

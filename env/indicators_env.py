@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from data_loader import (
     NSE_UNIVERSE,
     build_observation,
+    build_multi_step_episode,
     compute_ground_truth,
     generate_scenario_pool,
 )
@@ -234,12 +235,16 @@ def grade_task(task_id: str, episode_results: List[Dict[str, Any]]) -> GraderRes
 # ─── Session state ────────────────────────────────────────────────────────────
 
 class EnvSession:
+    MAX_STEPS = 5  # One trading week per episode
+
     def __init__(self, session_id: str, term: str = "medium"):
         self.session_id = session_id
         self.term = term.lower()
+        self.current_step: int = 0
+        self.episode_data: List = []   # List of (IndicatorsObservation, gt_str)
         self.current_obs: Optional[IndicatorsObservation] = None
         self.current_gt: Optional[str] = None
-        self.episodes_completed = 0
+        self.episodes_completed: int = 0
         self.episode_history: List[Dict[str, Any]] = []
         self.scenario_pool: List[Dict[str, str]] = []
 
@@ -256,18 +261,33 @@ class EnvSession:
         return self.scenario_pool.pop() if self.scenario_pool else None
 
     def reset(self) -> Optional[ResetResult]:
+        """Start a new 5-step episode. Single yfinance call fetches the full week."""
         for _ in range(10):
             sc = self._get_scenario()
             if sc is None:
                 return None
-            obs_dict = build_observation(sc["symbol"], sc["date"], self.term)
-            gt = compute_ground_truth(sc["symbol"], sc["date"], self.term)
-            if obs_dict is not None and gt is not None:
-                self.current_obs = IndicatorsObservation(**obs_dict)
-                self.current_gt = gt
+            steps = build_multi_step_episode(
+                symbol=sc["symbol"],
+                start_date=sc["date"],
+                n_steps=self.MAX_STEPS,
+                term=self.term,
+            )
+            if steps is not None:
+                self.episode_data = [
+                    (IndicatorsObservation(**obs_dict), gt)
+                    for obs_dict, gt in steps
+                ]
+                self.current_step = 0
+                self.current_obs, self.current_gt = self.episode_data[0]
                 return ResetResult(
                     observation=self.current_obs,
-                    info={"session_id": self.session_id, "term": self.term, "task_id": TERM_TO_TASK_ID.get(self.term)},
+                    info={
+                        "session_id": self.session_id,
+                        "term": self.term,
+                        "task_id": TERM_TO_TASK_ID.get(self.term),
+                        "step": 0,
+                        "max_steps": self.MAX_STEPS,
+                    },
                 )
         return None
 
@@ -277,25 +297,16 @@ class EnvSession:
                 observation=None, reward=0.0, done=True,
                 info={"error": "Call reset() first"}
             )
-        correct = action.direction.strip().capitalize() == self.current_gt
-        reward = 1.0 if correct else 0.0
 
-        # Shaped reward: conviction calibration
+        correct = action.direction.strip().capitalize() == self.current_gt
+
+        # Shaped reward: conviction calibration — range [-0.1, 1.1]
+        reward = 1.0 if correct else 0.0
         if correct and action.conviction >= 0.6:
             reward = 1.0 + 0.1 * (action.conviction - 0.6)
         elif not correct and action.conviction >= 0.8:
             reward = -0.1
-
         reward = round(max(-0.1, min(1.1, reward)), 4)
-
-        info = {
-            "ground_truth": self.current_gt,
-            "predicted": action.direction,
-            "correct": correct,
-            "conviction": action.conviction,
-            "session_id": self.session_id,
-            "task_id": TERM_TO_TASK_ID.get(self.term),
-        }
 
         # Store for grader
         self.episode_history.append({
@@ -305,11 +316,33 @@ class EnvSession:
             "reward": reward,
         })
 
-        self.episodes_completed += 1
-        prev_obs = self.current_obs
-        self.current_obs = None
-        self.current_gt = None
-        return StepResult(observation=prev_obs, reward=reward, done=True, info=info)
+        self.current_step += 1
+        done = self.current_step >= self.MAX_STEPS
+
+        info = {
+            "ground_truth": self.current_gt,
+            "predicted": action.direction,
+            "correct": correct,
+            "conviction": action.conviction,
+            "session_id": self.session_id,
+            "task_id": TERM_TO_TASK_ID.get(self.term),
+            "step": self.current_step,
+            "max_steps": self.MAX_STEPS,
+        }
+
+        if not done:
+            self.current_obs, self.current_gt = self.episode_data[self.current_step]
+        else:
+            self.episodes_completed += 1
+            self.current_obs = None
+            self.current_gt = None
+
+        return StepResult(
+            observation=self.current_obs,
+            reward=reward,
+            done=done,
+            info=info,
+        )
 
     def state(self) -> StateResult:
         return StateResult(
@@ -407,17 +440,19 @@ def baseline():
             reset_result = sess.reset()
             if reset_result is None:
                 continue
-            # Random agent
-            action = IndicatorsAction(
-                direction=random.choice(["Bullish", "Bearish", "Neutral"]),
-                conviction=round(random.uniform(0.3, 0.9), 2),
-            )
-            step_result = sess.step(action)
-            episode_results.append({
-                "ground_truth": step_result.info.get("ground_truth", ""),
-                "predicted": action.direction,
-                "conviction": action.conviction,
-            })
+            done = False
+            while not done:
+                action = IndicatorsAction(
+                    direction=random.choice(["Bullish", "Bearish", "Neutral"]),
+                    conviction=round(random.uniform(0.3, 0.9), 2),
+                )
+                step_result = sess.step(action)
+                episode_results.append({
+                    "ground_truth": step_result.info.get("ground_truth", ""),
+                    "predicted": action.direction,
+                    "conviction": action.conviction,
+                })
+                done = step_result.done
 
         grader_result = grade_task(task_id, episode_results)
         results[task_id] = {

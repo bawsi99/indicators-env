@@ -116,6 +116,33 @@ The reward is shaped over the full trajectory (not binary):
 
 ---
 
+## Episode Structure
+
+Each episode spans **5 consecutive trading days** for a single stock (one trading week). The agent observes how indicators evolve day-by-day and predicts the N-day forward return at each step. `done=True` is only returned on step 5.
+
+```
+Episode Example (medium task):
+  reset()  → RELIANCE, starting 2023-03-13
+  step 1   → Indicators for 2023-03-13 | predict 20d return | done=False
+  step 2   → Indicators for 2023-03-14 | predict 20d return | done=False
+  step 3   → Indicators for 2023-03-15 | predict 20d return | done=False
+  step 4   → Indicators for 2023-03-17 | predict 20d return | done=False
+  step 5   → Indicators for 2023-03-20 | predict 20d return | done=True
+```
+
+Inference log (what the evaluation script produces):
+```
+[START] task=medium_term_direction env=IndicatorsEnv model=...
+[STEP]  step=1 action=Bullish reward=1.0400 done=False error=None
+[STEP]  step=2 action=Neutral  reward=0.0000 done=False error=None
+[STEP]  step=3 action=Bullish  reward=1.0000 done=False error=None
+[STEP]  step=4 action=Bearish  reward=-0.1000 done=False error=None
+[STEP]  step=5 action=Bullish  reward=1.0000 done=True  error=None
+[END]   success=True steps=5 score=0.4800 rewards=[1.04, 0.0, 1.0, -0.1, 1.0]
+```
+
+---
+
 ## Evaluation & Baseline Scores
 
 | Task | Difficulty | Random Agent | OpenAI Baseline |
@@ -123,6 +150,19 @@ The reward is shaped over the full trajectory (not binary):
 | Short-term Direction | Easy | ~0.33 | ~0.42 |
 | Medium-term Direction | Medium | ~0.28 | ~0.46 |
 | Long-term Conviction | Hard | ~0.20 | ~0.38 |
+
+### GRPO Fine-Tuning Results (Qwen2.5-7B)
+
+GRPO training was run against this environment to demonstrate that the reward mechanism directly alters structural model behavior.
+
+| Metric | Zero-Shot | GRPO Step 220 | Δ |
+|---|---|---|---|
+| Bullish Recall | 36% | 52% | +16% |
+| Bearish Recall | 0% | 20% | +20% |
+| Neutral Recall | 70% | 0% | -70% |
+| Macro F1 | 0.257 | 0.213 | -0.044 |
+
+GRPO training shifted the model from Neutral-dominant behavior to active directional prediction: Bullish recall improved +16pp and Bearish recall improved +20pp at peak (step 220). However, the model over-corrected — Neutral recall dropped to 0 across all 14 evaluated checkpoints (steps 160–600), indicating the reward function needs stronger Neutral-class incentivization for true three-class balance. Macro F1 reflects the precision cost of forced directional commitment. The next iteration targets balanced recall via explicit Neutral-class reward weighting.
 
 ---
 
