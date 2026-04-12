@@ -1,24 +1,46 @@
 """
-indicators_env.py — OpenEnv-compatible RL environment for NSE equity portfolio management.
+indicators_env.py — IndicatorsEnv v4.0: Multi-stock Relative Alpha MDP
 
-Implements the full OpenEnv standard interface:
-  - HTTP endpoints: reset / step / state / tasks / grader / baseline / health
-  - WebSocket (/ws) for low-latency sequential step() calls during RL training
+OpenEnv-compatible RL environment for NSE equity analysis.
 
-Env spec (v3.0):
-  Observation : Full indicator snapshot + portfolio state (position, unrealized_pnl,
-                capital_remaining) + macro context (Task 3 only)
-  Action      : {"direction": "Bullish"|"Bearish"|"Neutral", "conviction": float 0-1}
-                Bullish = enter/hold Long (+1), Bearish = enter/hold Short (-1),
-                Neutral = exit/stay Flat (0)
-  Reward      : actual_next_day_return × position − 0.1% transaction_cost_if_changed
-                Scaled ×50 so a 2% daily return = reward ≈ 1.0
+Full OpenEnv interface:
+  HTTP  : GET  /health  /tasks
+          POST /reset  /step  /grader
+          GET  /state  /baseline
+  WebSocket: /ws
 
-Tasks (v3.0):
-  Task 1 (Easy)   : SHORT  — 5 steps (1 week),  ±1.5% threshold
-  Task 2 (Medium) : MEDIUM — 10 steps (2 weeks), ±2.5% threshold, transaction costs
-  Task 3 (Hard)   : LONG   — 20 steps (4 weeks), ±5.0% threshold,
-                             drawdown limit 5%, macro context in observation
+Env design (v4.0) — Multi-stock Relative Alpha MDP:
+  At each step the agent observes 3 stocks from the same NSE sector.
+  It picks ONE stock (or passes with NONE) and declares a direction.
+
+  Observation:
+    - 3 stocks from the same sector (same stocks for the whole episode)
+    - Full technical indicator snapshot per stock
+    - RSI + price-momentum signal history (accumulated across steps)
+    - Macro context in Task 3 (NIFTY50 trend, market regime)
+
+  Action:
+    {"stock": "HDFCBANK", "direction": "Bullish"|"Bearish"|"NONE", "conviction": 0.8}
+    NONE = skip this step (preserve selective participation)
+
+  Reward (market-neutral alpha):
+    alpha  = chosen_stock_period_return − sector_avg_period_return
+    reward = alpha × direction_sign × conviction × REWARD_SCALE
+    → random policy earns ~0 expected reward (sector avg cancels market beta)
+    → skilled policy earns consistently positive reward (correct stock selection)
+    → Kelly conviction semantics: fraction of virtual wealth wagered per step
+
+  Step spacing:
+    short  :  1 trading day per step → GT = 1-day return   (5 steps  = 1 week)
+    medium :  5 trading days per step → GT = 5-day return  (10 steps = 10 weeks)
+    long   : 20 trading days per step → GT = 20-day return (15 steps = 15 months)
+    GT window = step spacing → zero overlap, reward and GT measure identical period.
+
+  Task 3 extras:
+    - Drawdown limit: virtual capital terminates at 10% drawdown
+    - Macro context (NIFTY50) injected into each observation
+
+Built for the Meta × PyTorch Hackathon.
 """
 
 from __future__ import annotations
@@ -26,19 +48,33 @@ from __future__ import annotations
 import json
 import logging
 import random
+import sys
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from statistics import mean
+from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta
 
+try:
+    import yf_patch
+    yf_patch.patch_yfinance_globally()
+except ImportError:
+    pass
+
+import pandas as pd
 import uvicorn
+import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from data_loader import (
-    NSE_UNIVERSE,
-    build_observation,
-    build_multi_step_episode,
-    compute_ground_truth,
-    generate_scenario_pool,
+    NSE_UNIVERSE, 
+    SECTOR_GROUPS, 
+    TERM_WINDOWS, 
+    TERM_THRESHOLDS,
+    STEP_SPACING,
+    PERIOD_THRESHOLDS,
+    build_multi_stock_episode,
+    fetch_macro_context
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -47,148 +83,162 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="IndicatorsEnv",
     description=(
-        "OpenEnv-compatible RL environment for NSE equity portfolio management. "
-        "An AI agent receives technical indicator snapshots and manages a long/short/flat "
-        "position across a multi-step episode. Reward is driven by actual market returns "
-        "minus transaction costs. Three tasks of increasing difficulty: "
-        "5-step weekly trading (easy), 10-step two-week position management (medium), "
-        "20-step monthly trading with drawdown constraint and macro context (hard). "
-        "Built for the Meta × PyTorch Hackathon."
+        "IndicatorsEnv v4.0 — Multi-stock Relative Alpha MDP for NSE equity analysis. "
+        "At each step the agent observes 3 stocks from the same NSE sector and picks one "
+        "(or passes). Reward = (chosen stock return − sector average) × direction × conviction. "
+        "Market-neutral: random policy earns ~0, skilled policy earns positive alpha. "
+        "Three tasks of increasing difficulty. Built for the Meta × PyTorch Hackathon."
     ),
-    version="3.0.0",
+    version="4.0.0",
 )
 
 # ─── Environment constants ────────────────────────────────────────────────────
 
-# Episode length per task — genuine difficulty ladder
 TASK_MAX_STEPS: Dict[str, int] = {
-    "short":  5,   # 1 trading week
-    "medium": 10,  # 2 trading weeks
-    "long":   20,  # 4 trading weeks
+    "short":  5,    # 5 × 1-day  = 1 trading week
+    "medium": 10,   # 10 × 5-day = 10 trading weeks
+    "long":   15,   # 15 × 20-day = 15 months
 }
 
-TRANSACTION_COST = 0.001   # 0.1% per trade (realistic NSE brokerage + STT)
-DRAWDOWN_LIMIT   = 0.05    # 5% max drawdown; Task 3 terminates early if exceeded
-REWARD_SCALE     = 50.0    # ×50: a 2% daily return → reward ≈ 1.0
+REWARD_SCALE   = 50.0    # ×50: 2% alpha × conviction 0.7 × 50 ≈ 0.7 reward
+DRAWDOWN_LIMIT = 0.10    # 10% virtual capital drawdown terminates Task 3 early
 
-# ─── Task Definitions ─────────────────────────────────────────────────────────
+# ─── Task definitions ─────────────────────────────────────────────────────────
 
 TASKS = [
     {
         "id": "short_term_direction",
-        "name": "Short-term Position Management (Easy)",
+        "name": "Short-term Relative Alpha (Easy)",
         "description": (
-            "Manage a long/short/flat position in a single NSE stock over 5 consecutive "
-            "trading days (one week). The agent receives full technical indicator snapshots "
-            "and its current portfolio state (position, unrealized P&L, capital). "
-            "Reward = actual next-day return × position − 0.1% transaction cost per trade. "
-            "Actions: Bullish=Long, Bearish=Short, Neutral=Flat. "
-            "Ground-truth label: 5-day forward return threshold ±1.5%."
+            "5 steps, 1 trading day apart (= 1 week of daily observations). "
+            "At each step observe 3 stocks from the same NSE sector. "
+            "Pick one stock and declare Bullish (long), Bearish (short), or NONE (pass). "
+            "Reward = (chosen_return − sector_avg) × direction × conviction × 50. "
+            "Market-neutral: sector beta cancels — the agent profits from within-sector "
+            "relative momentum, not from broad market moves. "
+            "GT = 1-day forward return (±0.3% threshold)."
         ),
         "difficulty": "easy",
         "term": "short",
         "episode_steps": TASK_MAX_STEPS["short"],
-        "grader_note": "Score = fraction of correct directional predictions over all steps.",
+        "step_spacing_days": STEP_SPACING["short"],
+        "grader_note": "Directional accuracy on active (non-NONE) steps.",
         "action_schema": {
-            "direction": {"type": "string", "enum": ["Bullish", "Bearish", "Neutral"]},
-            "conviction": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "stock":     {"type": "string", "description": "NSE symbol or 'NONE' to skip"},
+            "direction": {"type": "string", "enum": ["Bullish", "Bearish", "NONE"]},
+            "conviction":{"type": "number", "minimum": 0.0, "maximum": 1.0},
         },
     },
     {
         "id": "medium_term_direction",
-        "name": "Medium-term Position Management (Medium)",
+        "name": "Medium-term Relative Alpha (Medium)",
         "description": (
-            "Manage a position over 10 consecutive trading days (two weeks). "
-            "Transaction costs (0.1% per position change) create a genuine "
-            "exploration-exploitation tradeoff — the agent must decide when to hold "
-            "vs. flip vs. exit. Portfolio state (position, P&L) is visible in observation. "
-            "Reward = actual next-day return × position − transaction cost. "
-            "Ground-truth label: 20-day forward return threshold ±2.5%."
+            "10 steps, 5 trading days apart (= 10 weeks, one observation per week). "
+            "Same 3-stock multi-stock structure. "
+            "Signal history accumulates across steps — RSI trends and price momentum "
+            "are visible for all 3 stocks at each step, enabling sequential inference. "
+            "Reward = (chosen_return − sector_avg) × direction × conviction × 50. "
+            "GT = 5-day forward return (±1.5% threshold). "
+            "Grader gives extra weight to Bearish/Neutral correct calls (anti-majority-bias)."
         ),
         "difficulty": "medium",
         "term": "medium",
         "episode_steps": TASK_MAX_STEPS["medium"],
+        "step_spacing_days": STEP_SPACING["medium"],
         "grader_note": (
-            "Score = weighted accuracy: Bearish/Neutral correct = 1.5x weight "
-            "(anti-majority-class bias), normalized to 0–1."
+            "Weighted accuracy on active steps: "
+            "Bearish/Neutral correct = 1.5× weight. "
+            "Participation bonus: score × (0.9 + 0.1 × active_rate)."
         ),
         "action_schema": {
-            "direction": {"type": "string", "enum": ["Bullish", "Bearish", "Neutral"]},
-            "conviction": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "stock":     {"type": "string", "description": "NSE symbol or 'NONE' to skip"},
+            "direction": {"type": "string", "enum": ["Bullish", "Bearish", "NONE"]},
+            "conviction":{"type": "number", "minimum": 0.0, "maximum": 1.0},
         },
     },
     {
         "id": "long_term_conviction",
-        "name": "Long-term Risk-Constrained Trading (Hard)",
+        "name": "Long-term Risk-Constrained Alpha (Hard)",
         "description": (
-            "Manage a position over 20 consecutive trading days (four weeks). "
-            "Episode terminates early if portfolio drawdown exceeds 5% — the agent "
-            "must avoid catastrophic losses, not just maximize return. "
-            "Macro context (NIFTY50 trend, market regime) is included in each observation "
-            "so the agent can condition decisions on market-wide conditions. "
-            "Correct predictions with high conviction (≥0.7) score highest; "
-            "overconfident wrong predictions are penalized. "
-            "Ground-truth label: 60-day forward return threshold ±5.0%."
+            "15 steps, 20 trading days apart (= 15 months, one observation per month). "
+            "Spans multiple market regimes — signal history essential for detecting "
+            "multi-month relative momentum shifts within the sector. "
+            "Macro context (NIFTY50 trend, market regime) added to each observation. "
+            "Episode terminates early if virtual capital drawdown exceeds 10% — "
+            "the agent must manage risk as well as generate alpha. "
+            "Correct calls with conviction ≥ 0.7 score highest; "
+            "overconfident wrong predictions penalized (conviction ≥ 0.8 on wrong). "
+            "GT = 20-day forward return (±2.5% threshold)."
         ),
         "difficulty": "hard",
         "term": "long",
         "episode_steps": TASK_MAX_STEPS["long"],
+        "step_spacing_days": STEP_SPACING["long"],
         "grader_note": (
-            "Score = conviction-calibrated accuracy: "
+            "Conviction-calibrated accuracy on active steps: "
             "correct+conviction≥0.7 = 1.0, correct+conviction<0.7 = 0.5, "
-            "wrong = 0.0, overconfident+wrong = −0.1. Normalized to 0–1."
+            "wrong = 0.0, overconfident wrong (conviction≥0.8) = −0.1. "
+            "Normalized to (0, 1)."
         ),
         "action_schema": {
-            "direction": {"type": "string", "enum": ["Bullish", "Bearish", "Neutral"]},
-            "conviction": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "stock":     {"type": "string", "description": "NSE symbol or 'NONE' to skip"},
+            "direction": {"type": "string", "enum": ["Bullish", "Bearish", "NONE"]},
+            "conviction":{"type": "number", "minimum": 0.0, "maximum": 1.0},
         },
     },
 ]
 
-TASK_BY_ID     = {t["id"]: t for t in TASKS}
+TASK_BY_ID      = {t["id"]: t for t in TASKS}
 TERM_TO_TASK_ID = {t["term"]: t["id"] for t in TASKS}
 
 # ─── Pydantic schemas ─────────────────────────────────────────────────────────
 
-class IndicatorsAction(BaseModel):
-    direction: str  = Field(..., description="Bullish=Long | Bearish=Short | Neutral=Flat")
+
+class StockState(BaseModel):
+    """Per-stock snapshot at one episode step."""
+    symbol:             str
+    current_price:      float
+    rsi_14:             float
+    rsi_trend:          str          # "up" | "down" | "flat"
+    price_momentum_pct: float        # cumulative return vs episode start (%)
+    indicators:         Dict[str, Any]
+
+
+class MultiStockObservation(BaseModel):
+    """Full observation returned by reset() and step()."""
+    step:             int               # 1-indexed current step
+    max_steps:        int
+    term:             str               # SHORT | MEDIUM | LONG
+    sector:           str               # e.g. "banking"
+    available_stocks: List[str]         # 3 symbols
+    stocks:           Dict[str, StockState]   # symbol → full state
+    signal_history:   List[Dict[str, Any]]    # chronological pick log
+    macro:            Optional[Dict[str, Any]] = None   # Task 3 only
+
+
+class MultiStockAction(BaseModel):
+    stock:     str   = Field(..., description="NSE symbol to pick, or 'NONE' to skip")
+    direction: str   = Field(..., description="Bullish | Bearish | NONE")
     conviction: float = Field(0.5, ge=0.0, le=1.0, description="Confidence 0–1")
 
 
-class IndicatorsObservation(BaseModel):
-    symbol:        str
-    date:          str
-    term:          str
-    current_price: float
-    indicators:    Dict[str, Any]
-    # Portfolio state — updated each step so actions causally affect next observation
-    position:          int   = Field(0,   description="Current position: -1=Short, 0=Flat, 1=Long")
-    unrealized_pnl:    float = Field(0.0, description="Total episode P&L as fraction (0.02 = +2%)")
-    capital_remaining: float = Field(1.0, description="Capital remaining (1.0=start, 0.95=5% drawdown)")
-    # Macro context — Task 3 (long-term) only
-    macro: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Macro context: nifty_trend, nifty_return_20d, market_regime (Task 3 only)"
-    )
-
-
 class StepResult(BaseModel):
-    observation: Optional[IndicatorsObservation]
-    reward: float
-    done: bool
-    info: Dict[str, Any]
+    observation: Optional[MultiStockObservation]
+    reward:      float
+    done:        bool
+    info:        Dict[str, Any]
 
 
 class ResetResult(BaseModel):
-    observation: IndicatorsObservation
-    info: Dict[str, Any]
+    observation: MultiStockObservation
+    info:        Dict[str, Any]
 
 
 class StateResult(BaseModel):
-    session_id:           str
-    current_observation:  Optional[IndicatorsObservation]
-    episodes_completed:   int
-    current_task:         Optional[str]
+    session_id:          str
+    current_observation: Optional[MultiStockObservation]
+    episodes_completed:  int
+    current_task:        Optional[str]
 
 
 class GraderRequest(BaseModel):
@@ -197,7 +247,9 @@ class GraderRequest(BaseModel):
         ...,
         description=(
             "List of step dicts, each with keys: "
-            "'ground_truth' (str), 'predicted' (str), 'conviction' (float)"
+            "'predicted' (str: Bullish|Bearish|NONE), "
+            "'ground_truth' (str: Bullish|Bearish|Neutral|N/A), "
+            "'conviction' (float)"
         ),
     )
 
@@ -209,72 +261,107 @@ class GraderResult(BaseModel):
     breakdown:    Dict[str, Any]
 
 
-# ─── Grader Logic ─────────────────────────────────────────────────────────────
+# ─── Grader logic ─────────────────────────────────────────────────────────────
+
 
 def _clamp_score(score: float) -> float:
-    """Clamp to strictly open interval (0, 1) as required by the validator."""
+    """Clamp to strictly open interval (0, 1) as required by the OpenEnv validator."""
     return round(max(0.001, min(0.999, score)), 4)
 
 
 def grade_task(task_id: str, episode_results: List[Dict[str, Any]]) -> GraderResult:
-    """Deterministic grader for all 3 tasks. Returns a score in (0, 1) exclusive."""
-    if not episode_results:
-        return GraderResult(task_id=task_id, score=0.001, num_episodes=0, breakdown={})
+    """
+    Score episode results for a given task.
 
-    n = len(episode_results)
+    Active steps = steps where predicted != 'NONE'.
+    Grader evaluates only active steps; passing silently does not harm the score
+    but forfeits the opportunity to score points.
+    """
+    if not episode_results:
+        return GraderResult(
+            task_id=task_id, score=0.001, num_episodes=0,
+            breakdown={"note": "No results submitted"}
+        )
+
+    n_total  = len(episode_results)
+    active   = [
+        r for r in episode_results
+        if str(r.get("predicted", "NONE")).capitalize() != "None"
+        and str(r.get("predicted", "NONE")).upper() != "NONE"
+    ]
+    n_active = len(active)
+
+    if n_active == 0:
+        return GraderResult(
+            task_id=task_id, score=0.001, num_episodes=n_total,
+            breakdown={"note": "All steps passed (NONE)", "active_steps": 0}
+        )
+
+    participation_rate = n_active / n_total
 
     if task_id == "short_term_direction":
-        # Easy: simple directional accuracy
         correct = sum(
-            1 for r in episode_results
-            if r.get("predicted", "").capitalize() == r.get("ground_truth", "").capitalize()
+            1 for r in active
+            if str(r.get("predicted","")).capitalize() == str(r.get("ground_truth","")).capitalize()
         )
-        score = _clamp_score(correct / n)
-        breakdown = {"correct": correct, "total": n, "metric": "accuracy"}
+        raw_score = correct / n_active
+        score = _clamp_score(raw_score)
+        breakdown = {
+            "correct": correct,
+            "active_steps": n_active,
+            "total_steps": n_total,
+            "participation_rate": round(participation_rate, 3),
+            "metric": "directional_accuracy",
+        }
 
     elif task_id == "medium_term_direction":
-        # Medium: weighted accuracy (minority classes worth more)
         weighted_score = 0.0
         weighted_total = 0.0
-        for r in episode_results:
-            gt   = r.get("ground_truth", "").capitalize()
-            pred = r.get("predicted", "").capitalize()
+        for r in active:
+            gt   = str(r.get("ground_truth", "")).capitalize()
+            pred = str(r.get("predicted", "")).capitalize()
             w = 1.5 if gt in ("Bearish", "Neutral") else 1.0
             weighted_total += w
             if pred == gt:
                 weighted_score += w
-        score = _clamp_score(
-            min(1.0, weighted_score / weighted_total) if weighted_total > 0 else 0.0
-        )
+        base = (weighted_score / weighted_total) if weighted_total > 0 else 0.0
+        # Participation bonus: agents that selectively engage vs. pass every step
+        adjusted = base * (0.9 + 0.1 * participation_rate)
+        score = _clamp_score(adjusted)
         breakdown = {
             "weighted_score": round(weighted_score, 3),
             "weighted_total": round(weighted_total, 3),
-            "metric": "weighted_accuracy",
+            "participation_rate": round(participation_rate, 3),
+            "active_steps": n_active,
+            "total_steps": n_total,
+            "metric": "weighted_accuracy_with_participation",
         }
 
     elif task_id == "long_term_conviction":
-        # Hard: direction + conviction calibration
-        per_step_scores = []
-        for r in episode_results:
-            gt         = r.get("ground_truth", "").capitalize()
-            pred       = r.get("predicted", "").capitalize()
+        per_step: List[float] = []
+        for r in active:
+            gt         = str(r.get("ground_truth", "")).capitalize()
+            pred       = str(r.get("predicted",    "")).capitalize()
             conviction = float(r.get("conviction", 0.5))
-            correct    = pred == gt
+            correct    = (pred == gt)
             if correct and conviction >= 0.7:
-                per_step_scores.append(1.0)
+                per_step.append(1.0)
             elif correct and conviction < 0.7:
-                per_step_scores.append(0.5)
+                per_step.append(0.5)
             elif not correct and conviction >= 0.8:
-                per_step_scores.append(-0.1)   # overconfident wrong
+                per_step.append(-0.1)   # overconfident wrong
             else:
-                per_step_scores.append(0.0)
-        raw   = sum(per_step_scores) / n
+                per_step.append(0.0)
+        raw = sum(per_step) / n_active
         # Normalize [-0.1, 1.0] → (0, 1) exclusive
         score = _clamp_score((raw + 0.1) / 1.1)
         breakdown = {
-            "per_step_scores": per_step_scores,
-            "raw_mean":        round(raw, 4),
-            "metric":          "conviction_calibrated_accuracy",
+            "per_step_scores": per_step,
+            "raw_mean": round(raw, 4),
+            "active_steps": n_active,
+            "total_steps": n_total,
+            "participation_rate": round(participation_rate, 3),
+            "metric": "conviction_calibrated_accuracy",
         }
 
     else:
@@ -283,195 +370,270 @@ def grade_task(task_id: str, episode_results: List[Dict[str, Any]]) -> GraderRes
     return GraderResult(
         task_id=task_id,
         score=round(score, 4),
-        num_episodes=n,
+        num_episodes=n_total,
         breakdown=breakdown,
     )
 
 
 # ─── Session state ────────────────────────────────────────────────────────────
 
+
 class EnvSession:
     """
-    Manages a single agent session across multi-step episodes.
+    Manages a single agent session across multi-stock episodes.
 
-    Portfolio tracking:
-      position          : -1 (short), 0 (flat), 1 (long)
-      capital           : starts at 1.0; updated each step by actual market return × position
-      peak_capital      : running maximum capital (for drawdown calculation)
-      unrealized_pnl    : capital - 1.0 (total episode P&L fraction)
+    State per episode:
+      episode_steps    : list of n_steps dicts from build_multi_stock_episode
+      current_step_idx : 0-indexed pointer into episode_steps
+      signal_history   : accumulated RSI/momentum log shown in each observation
+      virtual_capital  : starts 1.0; updated by scaled alpha reward (Task 3 drawdown)
 
-    Reward formula (per step):
-      pnl    = actual_1day_return × new_position − TRANSACTION_COST (if position changed)
-      reward = clamp(pnl × REWARD_SCALE, −1.0, 1.1)
-
-    Task 3 early termination:
-      If drawdown = (peak_capital − capital) / peak_capital > DRAWDOWN_LIMIT,
-      done=True before MAX_STEPS is reached.
+    Reward (per step):
+      alpha  = chosen_stock_period_return − mean(all_3_stocks_period_return)
+      reward = alpha × direction_sign × conviction × REWARD_SCALE
+      NONE action → reward = 0.0
     """
 
     def __init__(self, session_id: str, term: str = "medium"):
-        self.session_id = session_id
-        self.term       = term.lower()
-        self.MAX_STEPS  = TASK_MAX_STEPS.get(self.term, 5)
+        self.session_id     = session_id
+        self.term           = term.lower()
+        self.MAX_STEPS      = TASK_MAX_STEPS.get(self.term, 5)
 
-        # Episode data: list of (raw_obs_dict, gt_label, actual_1day_return)
-        self.episode_data:      List[Tuple[Dict[str, Any], str, float]] = []
-        self.current_step:      int = 0
-        self.current_obs:       Optional[IndicatorsObservation] = None
-        self.current_gt:        Optional[str] = None
+        # Episode data: list of step dicts from build_multi_stock_episode
+        self.episode_steps:     List[Dict[str, Any]] = []
+        self.current_step_idx:  int = 0
+        self.current_obs:       Optional[MultiStockObservation] = None
+        self.sector:            str = ""
+        self.symbols:           List[str] = []
+
         self.episodes_completed: int = 0
-        self.episode_history:   List[Dict[str, Any]] = []
-        self.scenario_pool:     List[Dict[str, str]] = []
+        self.episode_history:    List[Dict[str, Any]] = []
+        self.signal_history:     List[Dict[str, Any]] = []
 
-        # Portfolio state — reset each episode
-        self.position:       int   = 0
-        self.capital:        float = 1.0
-        self.peak_capital:   float = 1.0
-        self.unrealized_pnl: float = 0.0
+        # Task 3: virtual capital for drawdown tracking
+        self.virtual_capital: float = 1.0
+        self.peak_capital:    float = 1.0
+
+        # Lazy scenario pool
+        self.scenario_pool: List[Dict[str, Any]] = []
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
-    def _reset_portfolio(self) -> None:
-        self.position       = 0
-        self.capital        = 1.0
-        self.peak_capital   = 1.0
-        self.unrealized_pnl = 0.0
+    def _reset_episode_state(self) -> None:
+        self.episode_steps    = []
+        self.current_step_idx = 0
+        self.signal_history   = []
+        self.virtual_capital  = 1.0
+        self.peak_capital     = 1.0
 
-    def _build_obs(self, raw_obs_dict: Dict[str, Any]) -> IndicatorsObservation:
-        """Construct IndicatorsObservation injecting current portfolio state."""
-        return IndicatorsObservation(
-            **raw_obs_dict,
-            position          = self.position,
-            unrealized_pnl    = round(self.capital - 1.0, 6),
-            capital_remaining = round(self.capital, 6),
-        )
-
-    def _get_scenario(self) -> Optional[Dict[str, str]]:
+    def _get_scenario(self) -> Optional[Dict[str, Any]]:
+        """Pop a (sector, symbols, date) scenario from the pool, refilling if needed."""
         if not self.scenario_pool:
-            self.scenario_pool = generate_scenario_pool(
-                symbols       = random.sample(NSE_UNIVERSE, min(20, len(NSE_UNIVERSE))),
-                start_date    = "2020-01-01",
-                end_date      = "2024-06-30",
-                term          = self.term,
-                max_scenarios = 2000,
+            sectors   = list(SECTOR_GROUPS.keys())
+            # Date range safely within available yfinance data
+            # For long term: leave 15×20=300 days of future data → cap at 2022-12-31
+            end_date = {
+                "short":  "2024-06-30",
+                "medium": "2023-12-31",
+                "long":   "2022-06-30",
+            }.get(self.term, "2023-12-31")
+
+            dates = (
+                pd.bdate_range("2020-01-01", end_date, freq="15B")
+                .strftime("%Y-%m-%d")
+                .tolist()
             )
+            for sector in sectors:
+                syms = SECTOR_GROUPS[sector]
+                sampled_dates = random.sample(dates, min(60, len(dates)))
+                for date in sampled_dates:
+                    self.scenario_pool.append({
+                        "sector":  sector,
+                        "symbols": random.sample(syms, min(3, len(syms))),
+                        "date":    date,
+                    })
             random.shuffle(self.scenario_pool)
+
         return self.scenario_pool.pop() if self.scenario_pool else None
+
+    def _build_obs(self, step_idx: int) -> MultiStockObservation:
+        """Construct MultiStockObservation for the current step."""
+        raw = self.episode_steps[step_idx]
+        stocks_dict: Dict[str, StockState] = {}
+        for s in raw["stocks"]:
+            od = s["obs_dict"]
+            stocks_dict[s["symbol"]] = StockState(
+                symbol             = od["symbol"],
+                current_price      = od["current_price"],
+                rsi_14             = od["rsi_14"],
+                rsi_trend          = od["rsi_trend"],
+                price_momentum_pct = od["price_momentum_pct"],
+                indicators         = od["indicators"],
+            )
+
+        return MultiStockObservation(
+            step             = step_idx + 1,          # 1-indexed
+            max_steps        = self.MAX_STEPS,
+            term             = self.term.upper(),
+            sector           = self.sector,
+            available_stocks = self.symbols,
+            stocks           = stocks_dict,
+            signal_history   = list(self.signal_history),
+            macro            = raw.get("macro"),
+        )
 
     # ── core interface ────────────────────────────────────────────────────────
 
     def reset(self) -> Optional[ResetResult]:
         """
-        Start a new episode. Single yfinance call fetches the full episode window.
-        Portfolio state is reset to cash (position=0, capital=1.0).
+        Start a new episode. Picks a sector + 3 stocks, fetches data in 3 yfinance
+        calls (one per stock), builds the full episode in one pass.
         """
-        self._reset_portfolio()
+        self._reset_episode_state()
+
         for _ in range(10):
             sc = self._get_scenario()
             if sc is None:
                 return None
-            steps = build_multi_step_episode(
-                symbol        = sc["symbol"],
-                start_date    = sc["date"],
-                n_steps       = self.MAX_STEPS,
-                term          = self.term,
-                include_macro = (self.term == "long"),   # macro context for Task 3
+
+            steps = build_multi_stock_episode(
+                symbols      = sc["symbols"],
+                start_date   = sc["date"],
+                n_steps      = self.MAX_STEPS,
+                term         = self.term,
+                include_macro= (self.term == "long"),
             )
             if steps is not None:
-                self.episode_data  = steps              # [(obs_dict, gt, actual_return), ...]
-                self.current_step  = 0
-                self.current_gt    = steps[0][1]
-                self.current_obs   = self._build_obs(steps[0][0])
+                self.episode_steps = steps
+                self.sector        = sc["sector"]
+                self.symbols       = sc["symbols"]
+                self.current_obs   = self._build_obs(0)
                 return ResetResult(
                     observation = self.current_obs,
                     info = {
                         "session_id": self.session_id,
                         "term":       self.term,
                         "task_id":    TERM_TO_TASK_ID.get(self.term),
+                        "sector":     self.sector,
+                        "symbols":    self.symbols,
                         "step":       0,
                         "max_steps":  self.MAX_STEPS,
                     },
                 )
         return None
 
-    def step(self, action: IndicatorsAction) -> StepResult:
-        if self.current_obs is None or self.current_gt is None:
+    def step(self, action: MultiStockAction) -> StepResult:
+        if not self.episode_steps or self.current_step_idx >= len(self.episode_steps):
             return StepResult(
                 observation=None, reward=0.0, done=True,
                 info={"error": "Call reset() first"},
             )
 
+        raw         = self.episode_steps[self.current_step_idx]
+        stock_rows  = {s["symbol"]: s for s in raw["stocks"]}
+
+        # ── Parse action ──────────────────────────────────────────────────────
+        stock     = action.stock.strip().upper()
         direction = action.direction.strip().capitalize()
-        if direction not in ("Bullish", "Bearish", "Neutral"):
-            direction = "Neutral"
+        if direction not in ("Bullish", "Bearish"):
+            direction = "NONE"
+        if stock == "NONE" or direction == "NONE":
+            stock, direction = "NONE", "NONE"
+        elif stock not in stock_rows:
+            # Invalid symbol → treat as NONE
+            stock, direction = "NONE", "NONE"
 
-        direction_to_pos = {"Bullish": 1, "Neutral": 0, "Bearish": -1}
-        new_position  = direction_to_pos[direction]
-        prev_position = self.position
+        conviction = action.conviction
 
-        # Transaction cost when changing position (realistic NSE brokerage + STT)
-        cost = TRANSACTION_COST if new_position != prev_position else 0.0
+        # ── Reward: market-neutral alpha ──────────────────────────────────────
+        all_returns = [s["actual_period_return"] for s in raw["stocks"]]
+        sector_avg  = mean(all_returns) if all_returns else 0.0
 
-        # Actual 1-day return from data — the market gives the reward
-        _, _, actual_return = self.episode_data[self.current_step]
+        if direction == "NONE":
+            reward        = 0.0
+            alpha         = 0.0
+            chosen_return = 0.0
+            chosen_gt     = "N/A"
+        else:
+            chosen_return = stock_rows[stock]["actual_period_return"]
+            alpha         = chosen_return - sector_avg
+            direction_sign = 1 if direction == "Bullish" else -1
+            raw_reward     = alpha * direction_sign * conviction * REWARD_SCALE
+            reward         = round(max(-1.5, min(1.5, raw_reward)), 4)
+            chosen_gt      = stock_rows[stock]["gt"]
 
-        # Portfolio P&L for this step
-        pnl = actual_return * new_position - cost
+            # Task 3: update virtual capital for drawdown tracking
+            if self.term == "long":
+                pnl_fraction = alpha * direction_sign * conviction
+                self.virtual_capital  = max(0.0, self.virtual_capital + pnl_fraction)
+                self.peak_capital     = max(self.peak_capital, self.virtual_capital)
 
-        # Update capital
-        self.capital      = max(0.0, self.capital * (1.0 + pnl))
-        self.peak_capital = max(self.peak_capital, self.capital)
-        drawdown = (
-            (self.peak_capital - self.capital) / self.peak_capital
+        correct   = (direction != "NONE") and (direction == chosen_gt)
+        drawdown  = (
+            (self.peak_capital - self.virtual_capital) / self.peak_capital
             if self.peak_capital > 0 else 0.0
         )
 
-        # Update position
-        self.position       = new_position
-        self.unrealized_pnl = round(self.capital - 1.0, 6)
-
-        # Scale reward: ×50 so a 2% daily return ≈ 1.0
-        reward  = round(max(-1.0, min(1.1, pnl * REWARD_SCALE)), 4)
-        correct = direction == self.current_gt
-
-        self.episode_history.append({
-            "ground_truth":      self.current_gt,
-            "predicted":         direction,
-            "conviction":        action.conviction,
+        # ── Update signal history ─────────────────────────────────────────────
+        self.signal_history.append({
+            "step":              self.current_step_idx + 1,
+            "picked_stock":      stock,
+            "direction":         direction,
+            "conviction":        conviction,
+            "ground_truth":      chosen_gt,
+            "correct":           correct if direction != "NONE" else None,
+            "alpha_pct":         round(alpha * 100, 3),
             "reward":            reward,
-            "actual_return_pct": round(actual_return * 100, 4),
-            "position":          new_position,
-            "capital":           round(self.capital, 6),
-            "drawdown":          round(drawdown, 4),
+            # RSI snapshot of all stocks at this step
+            "rsi_snapshot": {
+                s["symbol"]: round(s["obs_dict"]["rsi_14"], 1)
+                for s in raw["stocks"]
+            },
         })
 
-        self.current_step += 1
-        # Task 3: terminate early on drawdown breach
+        self.episode_history.append({
+            "step":         self.current_step_idx + 1,
+            "stock":        stock,
+            "direction":    direction,
+            "ground_truth": chosen_gt,
+            "correct":      correct,
+            "conviction":   conviction,
+            "reward":       reward,
+            "alpha_pct":    round(alpha * 100, 3),
+            "chosen_return_pct": round(chosen_return * 100, 4),
+            "sector_avg_pct":    round(sector_avg * 100, 4),
+        })
+
+        # ── Advance step ──────────────────────────────────────────────────────
+        self.current_step_idx += 1
+
         early_stop = (self.term == "long") and (drawdown > DRAWDOWN_LIMIT)
-        done       = (self.current_step >= self.MAX_STEPS) or early_stop
+        done       = (self.current_step_idx >= self.MAX_STEPS) or early_stop
 
         info = {
-            "ground_truth":      self.current_gt,
-            "predicted":         direction,
-            "correct":           correct,
-            "conviction":        action.conviction,
+            "step":              self.current_step_idx,
+            "max_steps":         self.MAX_STEPS,
             "session_id":        self.session_id,
             "task_id":           TERM_TO_TASK_ID.get(self.term),
-            "step":              self.current_step,
-            "max_steps":         self.MAX_STEPS,
-            "actual_return_pct": round(actual_return * 100, 4),
-            "capital":           round(self.capital, 6),
+            "sector":            self.sector,
+            "chosen_stock":      stock,
+            "direction":         direction,
+            "ground_truth":      chosen_gt,
+            "correct":           correct,
+            "conviction":        conviction,
+            "alpha_pct":         round(alpha * 100, 3),
+            "chosen_return_pct": round(chosen_return * 100, 4),
+            "sector_avg_pct":    round(sector_avg * 100, 4),
+            "virtual_capital":   round(self.virtual_capital, 6),
             "drawdown":          round(drawdown, 4),
             "early_stop":        early_stop,
         }
 
         if not done:
-            self.current_gt  = self.episode_data[self.current_step][1]
-            self.current_obs = self._build_obs(self.episode_data[self.current_step][0])
+            self.current_obs = self._build_obs(self.current_step_idx)
         else:
             self.episodes_completed += 1
             self.current_obs = None
-            self.current_gt  = None
 
         return StepResult(
             observation = self.current_obs,
@@ -493,6 +655,7 @@ class EnvSession:
 
 _sessions: Dict[str, EnvSession] = {}
 
+
 def _get_or_create(session_id: Optional[str] = None, term: str = "medium") -> EnvSession:
     if session_id is None:
         session_id = str(uuid.uuid4())
@@ -503,14 +666,17 @@ def _get_or_create(session_id: Optional[str] = None, term: str = "medium") -> En
 
 # ─── HTTP endpoints (OpenEnv standard) ───────────────────────────────────────
 
+
 @app.get("/health")
 def health():
     return {
-        "status":  "ok",
-        "env":     "IndicatorsEnv",
-        "version": "3.0.0",
-        "tasks":   len(TASKS),
+        "status":       "ok",
+        "env":          "IndicatorsEnv",
+        "version":      "4.0.0",
+        "tasks":        len(TASKS),
         "episode_steps": TASK_MAX_STEPS,
+        "step_spacing":  STEP_SPACING,
+        "sectors":       list(SECTOR_GROUPS.keys()),
     }
 
 
@@ -518,13 +684,15 @@ def health():
 def get_tasks():
     """Returns all task definitions, action schemas, and episode lengths."""
     return {
-        "tasks":  TASKS,
-        "total":  len(TASKS),
+        "tasks":         TASKS,
+        "total":         len(TASKS),
         "action_schema": {
-            "direction": {"type": "string", "enum": ["Bullish", "Bearish", "Neutral"]},
-            "conviction": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "stock":     {"type": "string", "description": "NSE symbol or 'NONE' to skip"},
+            "direction": {"type": "string", "enum": ["Bullish", "Bearish", "NONE"]},
+            "conviction":{"type": "number", "minimum": 0.0, "maximum": 1.0},
         },
-        "episode_steps": TASK_MAX_STEPS,
+        "episode_steps":  TASK_MAX_STEPS,
+        "step_spacing":   STEP_SPACING,
     }
 
 
@@ -533,12 +701,15 @@ def reset(session_id: Optional[str] = None, term: str = "medium"):
     sess   = _get_or_create(session_id, term=term)
     result = sess.reset()
     if result is None:
-        raise HTTPException(status_code=503, detail="Could not fetch data. Retry.")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not fetch market data. Retry or try a different term.",
+        )
     return result
 
 
 @app.post("/step", response_model=StepResult)
-def step(action: IndicatorsAction, session_id: Optional[str] = None):
+def step(action: MultiStockAction, session_id: Optional[str] = None):
     sess = _get_or_create(session_id)
     return sess.step(action)
 
@@ -553,13 +724,14 @@ def state(session_id: Optional[str] = None):
 def grader(request: GraderRequest):
     """
     Score a completed episode set against a specific task grader.
-    Provide episode_results as list of {ground_truth, predicted, conviction}.
-    Returns a score in (0.0, 1.0).
+    episode_results: list of {predicted, ground_truth, conviction}.
+    Returns score in (0.0, 1.0).
     """
     if request.task_id not in TASK_BY_ID:
         raise HTTPException(
             status_code=404,
-            detail=f"Unknown task_id: {request.task_id}. Valid: {list(TASK_BY_ID.keys())}",
+            detail=f"Unknown task_id: {request.task_id}. "
+                   f"Valid: {list(TASK_BY_ID.keys())}",
         )
     return grade_task(request.task_id, request.episode_results)
 
@@ -567,9 +739,11 @@ def grader(request: GraderRequest):
 @app.get("/baseline")
 def baseline():
     """
-    Run the built-in random baseline agent across all 3 tasks (10 episodes each).
-    Returns reproducible baseline scores. Expected overall_mean ≈ 0.33.
-    Episode steps: short=5×10=50, medium=10×10=100, long=20×10=200.
+    Run the built-in random baseline across all 3 tasks (10 episodes each).
+    Expected: overall_mean ≈ 0.33 (random agent on 3-class directional problem).
+    short  : 5×10=50  steps
+    medium : 10×10=100 steps
+    long   : ≤15×10=150 steps (may be fewer with early termination)
     """
     results = {}
     random.seed(42)
@@ -586,14 +760,21 @@ def baseline():
                 continue
             done = False
             while not done:
-                action = IndicatorsAction(
-                    direction  = random.choice(["Bullish", "Bearish", "Neutral"]),
+                # Random agent: random stock, random direction (including NONE)
+                available = reset_result.observation.available_stocks
+                if hasattr(sess.current_obs, "available_stocks") and sess.current_obs:
+                    available = sess.current_obs.available_stocks
+                chosen_stock = random.choice(available + ["NONE"])
+                direction    = "NONE" if chosen_stock == "NONE" else random.choice(["Bullish", "Bearish"])
+                action = MultiStockAction(
+                    stock      = chosen_stock,
+                    direction  = direction,
                     conviction = round(random.uniform(0.3, 0.9), 2),
                 )
                 step_result = sess.step(action)
                 episode_results.append({
-                    "ground_truth": step_result.info.get("ground_truth", ""),
-                    "predicted":    action.direction,
+                    "predicted":    direction,
+                    "ground_truth": step_result.info.get("ground_truth", "N/A"),
                     "conviction":   action.conviction,
                 })
                 done = step_result.done
@@ -608,14 +789,15 @@ def baseline():
         }
 
     return {
-        "agent":         "random_baseline",
-        "seed":          42,
-        "tasks":         results,
-        "overall_mean":  round(sum(r["score"] for r in results.values()) / len(results), 4),
+        "agent":        "random_baseline",
+        "seed":         42,
+        "tasks":        results,
+        "overall_mean": round(sum(r["score"] for r in results.values()) / len(results), 4),
     }
 
 
 # ─── WebSocket endpoint (OpenEnv /ws) ────────────────────────────────────────
+
 
 @app.websocket("/ws")
 async def websocket_env(ws: WebSocket, session_id: Optional[str] = None, term: str = "medium"):
@@ -636,7 +818,7 @@ async def websocket_env(ws: WebSocket, session_id: Optional[str] = None, term: s
                     await ws.send_text(result.model_dump_json())
 
             elif method == "step":
-                action = IndicatorsAction(**msg.get("action", {}))
+                action = MultiStockAction(**msg.get("action", {}))
                 result = sess.step(action)
                 await ws.send_text(result.model_dump_json())
 
@@ -655,6 +837,7 @@ async def websocket_env(ws: WebSocket, session_id: Optional[str] = None, term: s
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
+
 
 if __name__ == "__main__":
     # workers=1 required: _sessions is an in-memory dict, not shared across processes

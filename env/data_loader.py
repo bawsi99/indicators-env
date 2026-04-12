@@ -23,6 +23,11 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+try:
+    import yf_patch
+except ImportError:
+    yf_patch = None
+
 logger = logging.getLogger(__name__)
 
 # ─── Constants ───────────────────────────────────────────────────────────────
@@ -39,6 +44,33 @@ TERM_THRESHOLDS: Dict[str, float] = {
     "short":    0.015,   # ±1.5%
     "medium":   0.025,   # ±2.5%
     "long":     0.050,   # ±5.0%
+}
+
+# Step spacing: trading days between consecutive episode steps.
+# GT window = step spacing → reward and GT are naturally aligned.
+STEP_SPACING: Dict[str, int] = {
+    "short":  1,   # daily  → 1-day GT, 5 steps  = 1 week
+    "medium": 5,   # weekly → 5-day GT, 10 steps = 10 weeks
+    "long":   20,  # monthly→ 20-day GT, 15 steps = 15 months
+}
+
+# GT thresholds calibrated to each return window.
+PERIOD_THRESHOLDS: Dict[str, float] = {
+    "short":  0.003,   # ±0.3% for 1-day return
+    "medium": 0.015,   # ±1.5% for 5-day return
+    "long":   0.025,   # ±2.5% for 20-day return
+}
+
+# Sector groups for multi-stock selection.
+# At each episode 3 stocks are sampled from the same sector so the
+# agent can exploit within-sector relative momentum rather than
+# broad market beta.
+SECTOR_GROUPS: Dict[str, List[str]] = {
+    "banking":  ["HDFCBANK", "ICICIBANK", "AXISBANK", "KOTAKBANK", "SBIN"],
+    "it":       ["TCS", "INFY", "WIPRO", "TECHM", "HCLTECH"],
+    "pharma":   ["SUNPHARMA", "DIVISLAB", "CIPLA", "DRREDDY", "LUPIN"],
+    "fmcg":     ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "DABUR"],
+    "auto":     ["MARUTI", "BAJAJ-AUTO", "HEROMOTOCO", "EICHERMOT", "TVSMOTOR"],
 }
 
 # 100 liquid NSE stocks (diversified across sectors)
@@ -404,16 +436,21 @@ def build_multi_step_episode(
         include_macro: if True, fetches NIFTY50 macro context once and embeds in each obs_dict.
                        Used for Task 3 (long-term) to give the agent market-wide awareness.
     """
+    spacing   = STEP_SPACING.get(term, 5)
     window    = TERM_WINDOWS.get(term, 20)
     threshold = TERM_THRESHOLDS.get(term, 0.025)
     try:
         start_dt    = pd.to_datetime(start_date)
         fetch_start = (start_dt - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-        fetch_end   = (start_dt + timedelta(days=n_steps * 3 + window + 20)).strftime("%Y-%m-%d")
+        fetch_end   = (start_dt + timedelta(days=n_steps * spacing + window + 30)).strftime("%Y-%m-%d")
 
-        ticker  = yf.Ticker(f"{symbol}.NS")
-        full_df = ticker.history(start=fetch_start, end=fetch_end, auto_adjust=True)
-        if full_df.empty or len(full_df) < lookback_days // 2:
+        if yf_patch:
+            full_df = yf_patch.fetch_ohlcv_direct(symbol, start_date=fetch_start, end_date=fetch_end)
+        else:
+            ticker  = yf.Ticker(f"{symbol}.NS")
+            full_df = ticker.history(start=fetch_start, end=fetch_end, auto_adjust=True)
+
+        if full_df is None or full_df.empty or len(full_df) < lookback_days // 3:
             return None
         full_df.columns = full_df.columns.str.lower()
         full_df = full_df[["open", "high", "low", "close", "volume"]].dropna()
@@ -466,6 +503,170 @@ def build_multi_step_episode(
 
     except Exception as e:
         logger.warning(f"[DataLoader] build_multi_step_episode failed for {symbol}/{start_date}: {e}")
+        return None
+
+
+def build_multi_stock_episode(
+    symbols: List[str],
+    start_date: str,
+    n_steps: int = 5,
+    term: str = "medium",
+    lookback_days: int = 300,
+    include_macro: bool = False,
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Build n_steps episode steps for 3 same-sector stocks.
+
+    Step spacing = STEP_SPACING[term] trading days between consecutive steps.
+    GT window    = step spacing (zero overlap — reward and GT measure the same
+                   return window, so the reward IS the directional signal).
+
+    Single yfinance call per stock (3 total) fetches the full episode.
+
+    Returns list of n_steps dicts:
+      [{
+        "step_index": int,
+        "step_date":  str (YYYY-MM-DD),
+        "stocks": [
+          {
+            "symbol":               str,
+            "obs_dict":             {symbol, date, term, current_price,
+                                     rsi_14, rsi_trend, price_momentum_pct,
+                                     indicators},
+            "gt":                   "Bullish" | "Bearish" | "Neutral",
+            "actual_period_return": float,   # e.g. 0.023 for +2.3%
+          }, ...   # exactly 3 stocks
+        ],
+        "macro": Optional[Dict],             # Task 3 only
+      }]
+
+    Returns None if data is insufficient for any stock or step.
+    """
+    spacing   = STEP_SPACING.get(term, 5)
+    threshold = PERIOD_THRESHOLDS.get(term, 0.015)
+
+    try:
+        start_dt    = pd.to_datetime(start_date)
+        fetch_start = (start_dt - timedelta(days=lookback_days + 5)).strftime("%Y-%m-%d")
+        # Buffer: enough for n_steps × spacing forward + gt_window (= spacing) + slack
+        fetch_end   = (start_dt + timedelta(days=(n_steps * spacing * 2) + 30)).strftime("%Y-%m-%d")
+
+        # ── Fetch all 3 stocks — single call each ─────────────────────────────
+        stock_data: Dict[str, pd.DataFrame] = {}
+        for symbol in symbols:
+            if yf_patch:
+                full_df = yf_patch.fetch_ohlcv_direct(symbol, start_date=fetch_start, end_date=fetch_end)
+            else:
+                ticker  = yf.Ticker(f"{symbol}.NS")
+                full_df = ticker.history(start=fetch_start, end=fetch_end, auto_adjust=True)
+
+            if full_df is None or full_df.empty or len(full_df) < lookback_days // 3:
+                logger.warning(
+                    f"[MultiStock] {symbol}: insufficient data ({len(full_df)} rows). "
+                    "Aborting episode."
+                )
+                return None
+            full_df.columns = full_df.columns.str.lower()
+            full_df = full_df[["open", "high", "low", "close", "volume"]].dropna()
+            full_df.index   = pd.to_datetime(full_df.index).tz_localize(None)
+            stock_data[symbol] = full_df
+
+        # ── Find step dates (common trading days, spaced by `spacing`) ────────
+        common_dates: List = sorted(
+            set(stock_data[symbols[0]].index).intersection(
+                *(set(stock_data[s].index) for s in symbols[1:])
+            )
+        )
+        # Only dates on or after start_date
+        common_dates = [d for d in common_dates if d >= start_dt]
+        if len(common_dates) < n_steps * spacing:
+            return None
+
+        # Every spacing-th available trading day
+        step_dates = [common_dates[i * spacing] for i in range(n_steps)]
+        if len(step_dates) < n_steps:
+            return None
+
+        # ── Macro context — fetched once for the episode (Task 3 only) ────────
+        macro_ctx = fetch_macro_context(start_date) if include_macro else None
+
+        # ── Episode-start price for momentum calculation ──────────────────────
+        episode_start_prices: Dict[str, float] = {}
+        for symbol in symbols:
+            df   = stock_data[symbol]
+            hist = df[df.index <= step_dates[0]].tail(1)
+            episode_start_prices[symbol] = (
+                float(hist["close"].iloc[-1]) if len(hist) > 0 else 0.0
+            )
+
+        # ── Build each step ───────────────────────────────────────────────────
+        steps: List[Dict[str, Any]] = []
+        for step_idx, step_dt in enumerate(step_dates):
+            step_stocks: List[Dict[str, Any]] = []
+
+            for symbol in symbols:
+                df   = stock_data[symbol]
+                hist = df[df.index <= step_dt].tail(lookback_days)
+                if len(hist) < 60:
+                    return None
+
+                indicators = compute_indicators(hist)
+                cp         = float(hist["close"].iloc[-1])
+
+                # RSI snapshot for signal history
+                rsi_val   = float(indicators.get("rsi", {}).get("rsi_14", 50.0))
+                rsi_trend = str(indicators.get("rsi", {}).get("trend", "flat"))
+
+                # Cumulative price momentum since episode start
+                start_p = episode_start_prices.get(symbol, cp)
+                price_momentum_pct = (
+                    round((cp - start_p) / start_p * 100, 3) if start_p > 0 else 0.0
+                )
+
+                obs_dict: Dict[str, Any] = {
+                    "symbol":             symbol,
+                    "date":               step_dt.strftime("%Y-%m-%d"),
+                    "term":               term.upper(),
+                    "current_price":      round(cp, 2),
+                    "rsi_14":             round(rsi_val, 2),
+                    "rsi_trend":          rsi_trend,
+                    "price_momentum_pct": price_momentum_pct,
+                    "indicators":         indicators,
+                }
+
+                # GT: actual return over the next `spacing` trading days
+                future = df[df.index > step_dt]
+                if len(future) < spacing:
+                    return None
+                exit_price    = float(future["close"].iloc[spacing - 1])
+                period_return = (exit_price - cp) / cp
+                gt = (
+                    "Bullish" if period_return >  threshold else
+                    "Bearish" if period_return < -threshold else
+                    "Neutral"
+                )
+
+                step_stocks.append({
+                    "symbol":               symbol,
+                    "obs_dict":             obs_dict,
+                    "gt":                   gt,
+                    "actual_period_return": round(period_return, 6),
+                })
+
+            steps.append({
+                "step_index": step_idx,
+                "step_date":  step_dt.strftime("%Y-%m-%d"),
+                "stocks":     step_stocks,
+                "macro":      macro_ctx,
+            })
+
+        return steps if len(steps) == n_steps else None
+
+    except Exception as e:
+        logger.warning(
+            f"[DataLoader] build_multi_stock_episode failed "
+            f"for {symbols}/{start_date}: {e}"
+        )
         return None
 
 

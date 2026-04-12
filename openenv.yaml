@@ -1,11 +1,14 @@
 name: IndicatorsEnv
-version: 1.0.0
+version: 4.0.0
 description: >
-  RL environment for NSE (Indian) stock market technical indicators prediction.
-  An AI agent receives a rich indicator snapshot (RSI, MACD, ADX, Bollinger Bands,
-  VWAP, MFI, CMF, pivot points) for a real NSE stock on a real historical date,
-  and must predict the directional price move over a configurable forward window.
-  Ground truth is computed from actual historical price data.
+  Multi-stock Relative Alpha MDP for NSE (Indian) equity analysis.
+  At each step the agent observes 3 stocks from the same NSE sector and must
+  identify which stock has the strongest relative momentum signal.
+  It picks one stock (or passes with NONE) and declares a direction.
+  Reward = (chosen stock period return - sector average) x direction x conviction x 50.
+  Market-neutral design: random policy earns ~0 expected reward; a skilled policy
+  earns consistently positive alpha by correctly identifying within-sector outperformers.
+  Step spacing = GT window so there is zero ground-truth overlap between steps.
 
 author: bawsi99
 license: MIT
@@ -16,32 +19,48 @@ tags:
   - technical-analysis
   - reinforcement-learning
   - openenv
+  - multi-stock
+  - relative-alpha
+  - market-neutral
 
 tasks:
   - id: short_term_direction
-    name: "Short-term Direction (Easy)"
+    name: "Short-term Relative Alpha (Easy)"
     description: >
-      Predict 5-day forward price direction from technical indicators.
-      Threshold: ±1.0%. More Neutral outcomes expected.
+      5 steps, 1 trading day apart (= 1 week of daily observations).
+      Observe 3 same-sector NSE stocks per step. Pick one or pass with NONE.
+      Reward = (chosen 1-day return - sector 1-day avg) x direction x conviction x 50.
+      GT threshold: +/-0.3% (1-day return window).
     difficulty: easy
     term: short
+    episode_steps: 5
+    step_spacing_days: 1
 
   - id: medium_term_direction
-    name: "Medium-term Direction (Medium)"
+    name: "Medium-term Relative Alpha (Medium)"
     description: >
-      Predict 20-day forward price direction from technical indicators.
-      Threshold: ±2.5%. Balanced Bullish/Bearish/Neutral distribution.
+      10 steps, 5 trading days apart (= 10 weekly observations over 2.5 months).
+      Signal history (RSI trends, price momentum) accumulates across steps
+      to enable sequential multi-step inference.
+      Reward = (chosen 5-day return - sector 5-day avg) x direction x conviction x 50.
+      GT threshold: +/-1.5% (5-day return window).
     difficulty: medium
     term: medium
+    episode_steps: 10
+    step_spacing_days: 5
 
   - id: long_term_conviction
-    name: "Long-term Conviction (Hard)"
+    name: "Long-term Risk-Constrained Alpha (Hard)"
     description: >
-      Predict 60-day forward price direction AND demonstrate calibrated conviction.
-      Threshold: ±5.0%. Score requires both correct direction AND conviction >= 0.7.
-      Overconfident wrong predictions are penalized.
+      15 steps, 20 trading days apart (= 15 monthly observations over 15 months).
+      Spans multiple market regimes. Macro context (NIFTY50 trend, market regime)
+      added to each observation. Episode terminates early if virtual capital
+      drawdown exceeds 10%. Conviction calibration scored.
+      GT threshold: +/-2.5% (20-day return window).
     difficulty: hard
     term: long
+    episode_steps: 15
+    step_spacing_days: 20
 
 endpoints:
   reset: "POST /reset"
@@ -51,46 +70,83 @@ endpoints:
   grader: "POST /grader"
   baseline: "GET /baseline"
   health: "GET /health"
+  websocket: "WS /ws"
 
 action_space:
   type: object
+  required:
+    - stock
+    - direction
+    - conviction
   properties:
+    stock:
+      type: string
+      description: >
+        NSE symbol to trade (must be one of the 3 available_stocks in the observation),
+        or "NONE" to skip this step.
+      example: "HDFCBANK"
     direction:
       type: string
-      enum: [Bullish, Bearish, Neutral]
-      description: Predicted price direction over the forward window
+      enum: [Bullish, Bearish, NONE]
+      description: >
+        Bullish = bet chosen stock outperforms sector average (long alpha).
+        Bearish = bet chosen stock underperforms sector average (short alpha).
+        NONE = pass this step (reward = 0, excluded from grader scoring).
     conviction:
       type: number
       minimum: 0.0
       maximum: 1.0
-      description: Agent confidence in the prediction (0=uncertain, 1=certain)
+      description: >
+        Kelly fraction: proportion of virtual wealth wagered on this prediction.
+        Higher conviction amplifies both gains and losses proportionally.
+        Set to 0.0 when passing (direction = NONE).
 
 observation_space:
   type: object
   properties:
-    symbol:
-      type: string
-      description: NSE stock ticker (e.g. RELIANCE, TCS, INFY)
-    date:
-      type: string
-      format: date
-      description: Observation date (YYYY-MM-DD)
+    step:
+      type: integer
+      description: Current step number (1-indexed)
+    max_steps:
+      type: integer
+      description: Total steps in this episode (5 / 10 / 15 by task)
     term:
       type: string
       enum: [SHORT, MEDIUM, LONG]
-    current_price:
-      type: number
-      description: Closing price on observation date
-    indicators:
+    sector:
+      type: string
+      description: "NSE sector shared by all 3 stocks (banking / it / pharma / fmcg / auto)"
+    available_stocks:
+      type: array
+      items:
+        type: string
+      description: Exactly 3 NSE symbols to choose from this step
+    stocks:
       type: object
       description: >
-        Nested indicator dict with: moving_averages, rsi, macd,
-        bollinger_bands, adx, stochastic, volatility, enhanced_volume, pivot_points
+        Dict keyed by symbol. Each entry: current_price, rsi_14, rsi_trend,
+        price_momentum_pct (cumulative return vs episode start), and a full
+        indicators dict (moving_averages, macd, bollinger_bands, adx,
+        stochastic, volatility, enhanced_volume, pivot_points).
+    signal_history:
+      type: array
+      description: >
+        Chronological log of past picks. Each entry: step, picked_stock,
+        direction, ground_truth, correct, alpha_pct, reward, rsi_snapshot.
+        Empty on step 1; grows by one entry each step.
+    macro:
+      type: object
+      nullable: true
+      description: >
+        Task 3 only. Fields: nifty_trend (Bullish/Bearish/Neutral),
+        nifty_return_20d (float %), market_regime (trending/ranging).
 
 reward:
-  min: -0.1
-  max: 1.1
-  description: >
-    1.0 for correct direction. Shaped upward for confident correct predictions
-    (conviction >= 0.6). Penalized (-0.1) for overconfident wrong predictions
-    (conviction >= 0.8). Hard task uses stricter grading.
+  formula: "(chosen_return - sector_avg_return) x direction_sign x conviction x 50"
+  min: -1.5
+  max: 1.5
+  notes: >
+    Market-neutral: sector average cancels broad market beta so a random agent
+    earns ~0 expected reward. NONE action yields reward = 0 and is excluded
+    from grader scoring. direction_sign is +1 for Bullish, -1 for Bearish.
+    Conviction scales reward linearly (Kelly criterion semantics).
