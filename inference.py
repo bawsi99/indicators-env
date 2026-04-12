@@ -16,7 +16,7 @@ import argparse
 from openai import OpenAI
 
 # --- Configuration (Mandatory per Hackathon Spec) ---
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api-inference.huggingface.co/v1/")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1/")
 MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
@@ -135,8 +135,8 @@ def run_evaluation(env_url, n_episodes):
                     # [STEP] Log — done reflects actual value, NOT hardcoded True
                     print(f"[STEP] step={step_num} action={direction} reward={reward:.4f} done={done} error=None", flush=True)
 
-            except Exception:
-                # Never crash the entire run
+            except Exception as e:
+                print(f"[ERR] episode={i+1} {type(e).__name__}: {e}", flush=True)
                 continue
 
         # 5. Finalize Task (Call Grader)
@@ -153,9 +153,10 @@ def run_evaluation(env_url, n_episodes):
             steps_taken  = len(episode_results)
             success      = final_score > 0.0
             print(f"[END] success={success} steps={steps_taken} score={final_score:.4f} rewards={rewards_list}", flush=True)
-        except Exception:
+        except Exception as e:
             rewards_list = [ep["reward"] for ep in episode_results]
             steps_taken  = len(episode_results)
+            print(f"[ERR] grader: {type(e).__name__}: {e}", flush=True)
             print(f"[END] success=False steps={steps_taken} score=0.0000 rewards={rewards_list}", flush=True)
 
 

@@ -513,4 +513,5 @@ async def websocket_env(ws: WebSocket, session_id: Optional[str] = None, term: s
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    uvicorn.run("indicators_env:app", host="0.0.0.0", port=7860, reload=False, workers=2)
+    # workers=1 required: _sessions is an in-memory dict, not shared across processes
+    uvicorn.run("indicators_env:app", host="0.0.0.0", port=7860, reload=False, workers=1)
