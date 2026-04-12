@@ -7,7 +7,7 @@ Requirements:
 3. Stdout follows strict [START], [STEP], and [END] logging format.
 4. Runtime < 20 min on 2 vCPU / 8 GB RAM.
 
-IndicatorsEnv v4.0 — Multi-stock Relative Alpha MDP:
+IndicatorsEnv v4.1 — Multi-stock Portfolio MDP:
   At each step the agent observes 3 stocks from the same NSE sector.
   It picks ONE stock and declares Bullish/Bearish, or passes with NONE.
   Reward = (chosen_stock_return − sector_avg) × direction × conviction × 50
@@ -126,7 +126,9 @@ def _build_prompt(
         "Reward = (your stock's return − sector average) × direction × conviction × 50. "
         "Market-neutral: picking randomly earns ~0 reward — you profit ONLY by selecting "
         "the outperformer correctly. "
-        "Pass with NONE when you see no clear setup. Forced picks hurt your score. "
+        "Switching your held position to a different stock costs 0.1% of capital in transaction cost. "
+        "If you are already in a strong position, staying in the same stock avoids switching cost. "
+        "Pass with NONE to hold your position without incurring a switch cost. "
         'Respond ONLY with JSON: {"stock": "<SYMBOL>", "direction": "Bullish"|"Bearish", '
         '"conviction": <0.0-1.0>} or {"stock": "NONE", "direction": "NONE", "conviction": 0.0}'
     )
@@ -198,12 +200,26 @@ def _build_prompt(
             f"reward={prev_info.get('reward',0):.3f})\n"
         )
 
+    # ── Portfolio context (v4.1) ──────────────────────────────────────────────
+    holding  = obs.get("current_holding", "NONE") if isinstance(obs, dict) else "NONE"
+    capital  = obs.get("capital", 1.0)             if isinstance(obs, dict) else 1.0
+    drawdown = obs.get("drawdown", 0.0)            if isinstance(obs, dict) else 0.0
+    if holding != "NONE":
+        tx_note = f"(switching from {holding} costs ~{capital * 0.001:.4f} tx_cost)"
+    else:
+        tx_note = "(no current holding — first pick is free)"
+    portfolio_str = (
+        f"Portfolio: capital={capital:.4f}  holding={holding}  "
+        f"drawdown={drawdown:.1%}  {tx_note}\n"
+    )
+
     user_prompt = (
         f"[Step {step_num}/{max_steps}] Sector: {sector.upper()} | Task: {task_id} | "
         f"Term: {term.upper()}\n\n"
         f"Stocks (same sector):\n{stocks_str}\n\n"
         f"{history_str}"
         f"{macro_str}"
+        f"{portfolio_str}"
         f"{prev_str}"
         f"Pick the stock with the strongest relative momentum signal.\n"
         f"Available: {available} or NONE to skip.\n\n"

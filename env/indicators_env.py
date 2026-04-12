@@ -1,5 +1,5 @@
 """
-indicators_env.py — IndicatorsEnv v4.0: Multi-stock Relative Alpha MDP
+indicators_env.py — IndicatorsEnv v4.1: Multi-stock Portfolio MDP
 
 OpenEnv-compatible RL environment for NSE equity analysis.
 
@@ -9,7 +9,7 @@ Full OpenEnv interface:
           GET  /state  /baseline
   WebSocket: /ws
 
-Env design (v4.0) — Multi-stock Relative Alpha MDP:
+Env design (v4.1) — Multi-stock Portfolio MDP:
   At each step the agent observes 3 stocks from the same NSE sector.
   It picks ONE stock (or passes with NONE) and declares a direction.
 
@@ -83,13 +83,15 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="IndicatorsEnv",
     description=(
-        "IndicatorsEnv v4.0 — Multi-stock Relative Alpha MDP for NSE equity analysis. "
+        "IndicatorsEnv v4.1 — Multi-stock Portfolio MDP for NSE equity analysis. "
         "At each step the agent observes 3 stocks from the same NSE sector and picks one "
         "(or passes). Reward = (chosen stock return − sector average) × direction × conviction. "
-        "Market-neutral: random policy earns ~0, skilled policy earns positive alpha. "
-        "Three tasks of increasing difficulty. Built for the Meta × PyTorch Hackathon."
+        "Market-neutral alpha with portfolio capital tracking: holding a position avoids "
+        "transaction cost (0.1%); switching incurs it. Capital causally tracks cumulative alpha P&L. "
+        "Drawdown limits apply to all tasks. Three tasks of increasing difficulty. "
+        "Built for the Meta × PyTorch Hackathon."
     ),
-    version="4.0.0",
+    version="4.1.0",
 )
 
 # ─── Environment constants ────────────────────────────────────────────────────
@@ -100,8 +102,14 @@ TASK_MAX_STEPS: Dict[str, int] = {
     "long":   15,   # 15 × 20-day = 15 months
 }
 
-REWARD_SCALE   = 50.0    # ×50: 2% alpha × conviction 0.7 × 50 ≈ 0.7 reward
-DRAWDOWN_LIMIT = 0.10    # 10% virtual capital drawdown terminates Task 3 early
+REWARD_SCALE     = 50.0   # ×50: 2% alpha × conviction 0.7 × 50 ≈ 0.7 reward
+TRANSACTION_COST = 0.001  # 0.1% of capital on holding switch (exploration cost)
+
+DRAWDOWN_LIMITS: Dict[str, float] = {
+    "short":  0.05,   # 5%  — 5 steps, tight risk
+    "medium": 0.10,   # 10% — 10 steps
+    "long":   0.15,   # 15% — 15 steps, more recovery time
+}
 
 # ─── Task definitions ─────────────────────────────────────────────────────────
 
@@ -116,7 +124,9 @@ TASKS = [
             "Reward = (chosen_return − sector_avg) × direction × conviction × 50. "
             "Market-neutral: sector beta cancels — the agent profits from within-sector "
             "relative momentum, not from broad market moves. "
-            "GT = 1-day forward return (±0.3% threshold)."
+            "GT = 1-day forward return (±0.3% threshold). "
+            "Virtual capital tracked across steps; 0.1% transaction cost when switching holdings; "
+            "episode ends early at 5% drawdown."
         ),
         "difficulty": "easy",
         "term": "short",
@@ -139,7 +149,8 @@ TASKS = [
             "are visible for all 3 stocks at each step, enabling sequential inference. "
             "Reward = (chosen_return − sector_avg) × direction × conviction × 50. "
             "GT = 5-day forward return (±1.5% threshold). "
-            "Grader gives extra weight to Bearish/Neutral correct calls (anti-majority-bias)."
+            "Grader gives extra weight to Bearish/Neutral correct calls (anti-majority-bias). "
+            "Virtual capital tracked; 0.1% switching cost; 10% drawdown terminates episode early."
         ),
         "difficulty": "medium",
         "term": "medium",
@@ -164,8 +175,8 @@ TASKS = [
             "Spans multiple market regimes — signal history essential for detecting "
             "multi-month relative momentum shifts within the sector. "
             "Macro context (NIFTY50 trend, market regime) added to each observation. "
-            "Episode terminates early if virtual capital drawdown exceeds 10% — "
-            "the agent must manage risk as well as generate alpha. "
+            "Capital-tracked risk management: 0.1% switching cost + 15% drawdown limit. "
+            "The agent must manage risk across months as well as generate alpha. "
             "Correct calls with conviction ≥ 0.7 score highest; "
             "overconfident wrong predictions penalized (conviction ≥ 0.8 on wrong). "
             "GT = 20-day forward return (±2.5% threshold)."
@@ -214,6 +225,10 @@ class MultiStockObservation(BaseModel):
     stocks:           Dict[str, StockState]   # symbol → full state
     signal_history:   List[Dict[str, Any]]    # chronological pick log
     macro:            Optional[Dict[str, Any]] = None   # Task 3 only
+    # v4.1 portfolio fields (all tasks)
+    current_holding:  str   = "NONE"   # stock held from last active step, or "NONE"
+    capital:          float = 1.0      # virtual capital (starts 1.0, tracks cumulative alpha P&L)
+    drawdown:         float = 0.0      # current drawdown from peak capital
 
 
 class MultiStockAction(BaseModel):
@@ -410,9 +425,10 @@ class EnvSession:
         self.episode_history:    List[Dict[str, Any]] = []
         self.signal_history:     List[Dict[str, Any]] = []
 
-        # Task 3: virtual capital for drawdown tracking
+        # Portfolio: virtual capital and holding tracked across all tasks
         self.virtual_capital: float = 1.0
         self.peak_capital:    float = 1.0
+        self.current_holding: str   = "NONE"
 
         # Lazy scenario pool
         self.scenario_pool: List[Dict[str, Any]] = []
@@ -425,6 +441,7 @@ class EnvSession:
         self.signal_history   = []
         self.virtual_capital  = 1.0
         self.peak_capital     = 1.0
+        self.current_holding  = "NONE"
 
     def _get_scenario(self) -> Optional[Dict[str, Any]]:
         """Pop a (sector, symbols, date) scenario from the pool, refilling if needed."""
@@ -471,6 +488,11 @@ class EnvSession:
                 indicators         = od["indicators"],
             )
 
+        drawdown = (
+            (self.peak_capital - self.virtual_capital) / self.peak_capital
+            if self.peak_capital > 0 else 0.0
+        )
+
         return MultiStockObservation(
             step             = step_idx + 1,          # 1-indexed
             max_steps        = self.MAX_STEPS,
@@ -480,6 +502,9 @@ class EnvSession:
             stocks           = stocks_dict,
             signal_history   = list(self.signal_history),
             macro            = raw.get("macro"),
+            current_holding  = self.current_holding,
+            capital          = round(self.virtual_capital, 6),
+            drawdown         = round(drawdown, 4),
         )
 
     # ── core interface ────────────────────────────────────────────────────────
@@ -545,7 +570,7 @@ class EnvSession:
 
         conviction = action.conviction
 
-        # ── Reward: market-neutral alpha ──────────────────────────────────────
+        # ── Reward: market-neutral alpha + portfolio dynamics ─────────────────
         all_returns = [s["actual_period_return"] for s in raw["stocks"]]
         sector_avg  = mean(all_returns) if all_returns else 0.0
 
@@ -554,21 +579,33 @@ class EnvSession:
             alpha         = 0.0
             chosen_return = 0.0
             chosen_gt     = "N/A"
+            tx_cost       = 0.0
+            # NONE pass: keep existing holding, no capital change
         else:
-            chosen_return = stock_rows[stock]["actual_period_return"]
-            alpha         = chosen_return - sector_avg
+            chosen_return  = stock_rows[stock]["actual_period_return"]
+            alpha          = chosen_return - sector_avg
             direction_sign = 1 if direction == "Bullish" else -1
             raw_reward     = alpha * direction_sign * conviction * REWARD_SCALE
-            reward         = round(max(-1.5, min(1.5, raw_reward)), 4)
             chosen_gt      = stock_rows[stock]["gt"]
 
-            # Task 3: update virtual capital for drawdown tracking
-            if self.term == "long":
-                pnl_fraction = alpha * direction_sign * conviction
-                self.virtual_capital  = max(0.0, self.virtual_capital + pnl_fraction)
-                self.peak_capital     = max(self.peak_capital, self.virtual_capital)
+            # Transaction cost: 0.1% of capital when switching holdings (all tasks)
+            tx_cost = 0.0
+            if (self.current_holding != "NONE"
+                    and stock != self.current_holding):
+                tx_cost = TRANSACTION_COST * self.virtual_capital
+
+            reward = round(max(-1.5, min(1.5, raw_reward)) - tx_cost, 4)
+
+            # Update capital — ALL tasks (not just long)
+            pnl_fraction         = alpha * direction_sign * conviction
+            self.virtual_capital = max(0.0, self.virtual_capital + pnl_fraction)
+            self.peak_capital    = max(self.peak_capital, self.virtual_capital)
+
+            # Update holding
+            self.current_holding = stock
 
         correct   = (direction != "NONE") and (direction == chosen_gt)
+        drawdown_limit = DRAWDOWN_LIMITS.get(self.term, 0.10)
         drawdown  = (
             (self.peak_capital - self.virtual_capital) / self.peak_capital
             if self.peak_capital > 0 else 0.0
@@ -599,6 +636,7 @@ class EnvSession:
             "correct":      correct,
             "conviction":   conviction,
             "reward":       reward,
+            "tx_cost":      round(tx_cost, 6),
             "alpha_pct":    round(alpha * 100, 3),
             "chosen_return_pct": round(chosen_return * 100, 4),
             "sector_avg_pct":    round(sector_avg * 100, 4),
@@ -607,7 +645,7 @@ class EnvSession:
         # ── Advance step ──────────────────────────────────────────────────────
         self.current_step_idx += 1
 
-        early_stop = (self.term == "long") and (drawdown > DRAWDOWN_LIMIT)
+        early_stop = drawdown > drawdown_limit
         done       = (self.current_step_idx >= self.MAX_STEPS) or early_stop
 
         info = {
@@ -621,11 +659,14 @@ class EnvSession:
             "ground_truth":      chosen_gt,
             "correct":           correct,
             "conviction":        conviction,
+            "tx_cost":           round(tx_cost, 6),
+            "current_holding":   self.current_holding,
             "alpha_pct":         round(alpha * 100, 3),
             "chosen_return_pct": round(chosen_return * 100, 4),
             "sector_avg_pct":    round(sector_avg * 100, 4),
             "virtual_capital":   round(self.virtual_capital, 6),
             "drawdown":          round(drawdown, 4),
+            "drawdown_limit":    drawdown_limit,
             "early_stop":        early_stop,
         }
 
@@ -670,13 +711,15 @@ def _get_or_create(session_id: Optional[str] = None, term: str = "medium") -> En
 @app.get("/health")
 def health():
     return {
-        "status":       "ok",
-        "env":          "IndicatorsEnv",
-        "version":      "4.0.0",
-        "tasks":        len(TASKS),
-        "episode_steps": TASK_MAX_STEPS,
-        "step_spacing":  STEP_SPACING,
-        "sectors":       list(SECTOR_GROUPS.keys()),
+        "status":           "ok",
+        "env":              "IndicatorsEnv",
+        "version":          "4.1.0",
+        "tasks":            len(TASKS),
+        "episode_steps":    TASK_MAX_STEPS,
+        "step_spacing":     STEP_SPACING,
+        "sectors":          list(SECTOR_GROUPS.keys()),
+        "drawdown_limits":  DRAWDOWN_LIMITS,
+        "transaction_cost": TRANSACTION_COST,
     }
 
 

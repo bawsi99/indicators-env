@@ -1,5 +1,5 @@
 """
-smoke_test.py — Local smoke test for IndicatorsEnv v4.0
+smoke_test.py — Local smoke test for IndicatorsEnv v4.1
 
 Two modes:
   Unit mode (default) — imports env code directly, uses synthetic data.
@@ -102,17 +102,23 @@ def run_unit_tests():
     from indicators_env import (
         EnvSession, MultiStockAction, grade_task,
         TASK_MAX_STEPS, SECTOR_GROUPS,
+        TRANSACTION_COST, DRAWDOWN_LIMITS,
     )
 
     SYMBOLS = ["HDFCBANK", "ICICIBANK", "AXISBANK"]
 
     # ── 1. Constants & imports ────────────────────────────────────────────────
     section("1. Constants & imports")
-    check("TASK_MAX_STEPS short=5",   TASK_MAX_STEPS["short"]  == 5,  str(TASK_MAX_STEPS))
-    check("TASK_MAX_STEPS medium=10", TASK_MAX_STEPS["medium"] == 10, str(TASK_MAX_STEPS))
-    check("TASK_MAX_STEPS long=15",   TASK_MAX_STEPS["long"]   == 15, str(TASK_MAX_STEPS))
-    check("5 sectors",                len(SECTOR_GROUPS) == 5,        str(list(SECTOR_GROUPS.keys())))
-    check("each sector has 5 stocks", all(len(v) == 5 for v in SECTOR_GROUPS.values()))
+    check("TASK_MAX_STEPS short=5",    TASK_MAX_STEPS["short"]  == 5,  str(TASK_MAX_STEPS))
+    check("TASK_MAX_STEPS medium=10",  TASK_MAX_STEPS["medium"] == 10, str(TASK_MAX_STEPS))
+    check("TASK_MAX_STEPS long=15",    TASK_MAX_STEPS["long"]   == 15, str(TASK_MAX_STEPS))
+    check("5 sectors",                 len(SECTOR_GROUPS) == 5,        str(list(SECTOR_GROUPS.keys())))
+    check("each sector has 5 stocks",  all(len(v) == 5 for v in SECTOR_GROUPS.values()))
+    # v4.1 constants
+    check("TRANSACTION_COST=0.001",    TRANSACTION_COST == 0.001,      str(TRANSACTION_COST))
+    check("DRAWDOWN_LIMITS short=5%",  DRAWDOWN_LIMITS["short"]  == 0.05)
+    check("DRAWDOWN_LIMITS medium=10%",DRAWDOWN_LIMITS["medium"] == 0.10)
+    check("DRAWDOWN_LIMITS long=15%",  DRAWDOWN_LIMITS["long"]   == 0.15)
 
     # ── 2. Multi-step episode structure ───────────────────────────────────────
     section("2. Multi-step episode structure (short, 5 steps, synthetic)")
@@ -255,19 +261,19 @@ def run_unit_tests():
     check("long: score > 0",        g4.score > 0,  f"score={g4.score:.4f}")
     check("long: active_steps=3",   g4.breakdown["active_steps"] == 3)
 
-    # ── 6. Task 3 drawdown limit ──────────────────────────────────────────────
-    section("6. Task 3 early termination on drawdown")
+    # ── 6. Drawdown limit — long task (15%) ──────────────────────────────────
+    section("6. Early termination on drawdown (long task, 15% limit)")
     sess5 = EnvSession(session_id="unit-dd", term="long")
     fake_long = make_fake_episode(SYMBOLS, 15, "long")
 
     # Force HDFCBANK (index 0) to massively underperform sector average.
     # HDFCBANK=-0.15, ICICIBANK=0.0, AXISBANK=0.0 → avg=-0.05
     # alpha = -0.15 - (-0.05) = -0.10 per step
-    # Bullish pick: pnl = -0.10 × 1 × 0.8 = -0.08 → drawdown >10% after 2 steps.
-    for step in fake_long:
-        step["stocks"][0]["actual_period_return"] = -0.15   # HDFCBANK underperforms
-        step["stocks"][1]["actual_period_return"] =  0.0    # ICICIBANK flat
-        step["stocks"][2]["actual_period_return"] =  0.0    # AXISBANK flat
+    # Bullish pick: pnl = -0.10 × 1 × 0.8 = -0.08 → drawdown >15% after 2 steps.
+    for step_d in fake_long:
+        step_d["stocks"][0]["actual_period_return"] = -0.15   # HDFCBANK underperforms
+        step_d["stocks"][1]["actual_period_return"] =  0.0    # ICICIBANK flat
+        step_d["stocks"][2]["actual_period_return"] =  0.0    # AXISBANK flat
 
     sess5.episode_steps = fake_long
     sess5.sector  = "banking"
@@ -280,10 +286,110 @@ def run_unit_tests():
         if r.done:
             early_terminated = True
             dd = r.info.get("drawdown", 0)
-            check(f"early termination triggered (drawdown={dd:.3f} > 0.10)",
-                  dd > 0.10, f"step={r.info.get('step')}")
+            dl = r.info.get("drawdown_limit", DRAWDOWN_LIMITS["long"])
+            check(f"early termination triggered (drawdown={dd:.3f} > limit={dl})",
+                  dd > dl, f"step={r.info.get('step')}")
             break
     check("drawdown limit terminates before step 15", early_terminated)
+
+    # ── 7. v4.1: capital updates on active step ───────────────────────────────
+    section("7. v4.1 — Capital tracks cumulative alpha P&L (all tasks)")
+    sess7 = EnvSession(session_id="unit-cap", term="short")
+    fake_cap = make_fake_episode(SYMBOLS, 5, "short")
+    # HDFCBANK +4%, others +1% → avg = (0.04+0.01+0.01)/3 ≈ 0.02
+    # alpha = 0.04 - 0.02 = 0.02; pnl = 0.02 × 1 × 0.7 = 0.014
+    # capital after = 1.0 + 0.014 = 1.014
+    fake_cap[0]["stocks"][0]["actual_period_return"] = 0.04
+    fake_cap[0]["stocks"][1]["actual_period_return"] = 0.01
+    fake_cap[0]["stocks"][2]["actual_period_return"] = 0.01
+    sess7.episode_steps = fake_cap
+    sess7.sector  = "banking"
+    sess7.symbols = SYMBOLS
+    sess7.current_obs = sess7._build_obs(0)
+
+    check("capital=1.0 before any step", sess7.virtual_capital == 1.0)
+    r7 = sess7.step(MultiStockAction(stock="HDFCBANK", direction="Bullish", conviction=0.7))
+    expected_pnl = round(0.02 * 0.7, 6)    # alpha × conviction
+    expected_cap = round(1.0 + expected_pnl, 6)
+    check(f"capital ≈ {expected_cap} after profitable step",
+          abs(sess7.virtual_capital - expected_cap) < 0.001,
+          f"got {sess7.virtual_capital:.6f}")
+    check("obs.capital matches internal capital",
+          abs(r7.observation.capital - sess7.virtual_capital) < 1e-6 if r7.observation else False,
+          f"obs.capital={r7.observation.capital if r7.observation else 'N/A'}")
+    check("obs.current_holding=HDFCBANK after pick",
+          r7.observation.current_holding == "HDFCBANK" if r7.observation else False)
+
+    # ── 8. v4.1: transaction cost on holding switch ───────────────────────────
+    section("8. v4.1 — Transaction cost when switching holdings")
+    sess8 = EnvSession(session_id="unit-tx", term="medium")
+    fake_tx = make_fake_episode(SYMBOLS, 10, "medium")
+    for s_step in fake_tx:
+        s_step["stocks"][0]["actual_period_return"] = 0.02   # HDFCBANK
+        s_step["stocks"][1]["actual_period_return"] = 0.01   # ICICIBANK
+        s_step["stocks"][2]["actual_period_return"] = 0.01   # AXISBANK
+    sess8.episode_steps = fake_tx
+    sess8.sector  = "banking"
+    sess8.symbols = SYMBOLS
+    sess8.current_obs = sess8._build_obs(0)
+
+    # Step 1: pick HDFCBANK — no prior holding, tx_cost should be 0
+    r8a = sess8.step(MultiStockAction(stock="HDFCBANK", direction="Bullish", conviction=0.7))
+    check("tx_cost=0 on first pick (no prior holding)",
+          r8a.info.get("tx_cost", -1) == 0.0,
+          f"tx_cost={r8a.info.get('tx_cost')}")
+    check("current_holding=HDFCBANK after step 1",
+          r8a.info.get("current_holding") == "HDFCBANK")
+
+    # Step 2: switch to ICICIBANK — tx_cost = 0.001 × capital_after_step1
+    cap_after_step1 = sess8.virtual_capital
+    r8b = sess8.step(MultiStockAction(stock="ICICIBANK", direction="Bullish", conviction=0.7))
+    expected_tx = round(TRANSACTION_COST * cap_after_step1, 6)
+    check(f"tx_cost ≈ {expected_tx:.6f} on switch HDFCBANK→ICICIBANK",
+          abs(r8b.info.get("tx_cost", -1) - expected_tx) < 1e-6,
+          f"got {r8b.info.get('tx_cost')}")
+    check("current_holding=ICICIBANK after switch",
+          r8b.info.get("current_holding") == "ICICIBANK")
+
+    # Step 3: same stock (ICICIBANK→ICICIBANK) — no tx_cost
+    r8c = sess8.step(MultiStockAction(stock="ICICIBANK", direction="Bullish", conviction=0.7))
+    check("tx_cost=0 when staying in same holding",
+          r8c.info.get("tx_cost", -1) == 0.0,
+          f"tx_cost={r8c.info.get('tx_cost')}")
+
+    # Step 4: NONE pass — no tx_cost, holding preserved
+    r8d = sess8.step(MultiStockAction(stock="NONE", direction="NONE", conviction=0.0))
+    check("tx_cost=0 on NONE pass",
+          r8d.info.get("tx_cost", -1) == 0.0,
+          f"tx_cost={r8d.info.get('tx_cost')}")
+    check("holding=ICICIBANK preserved after NONE pass",
+          r8d.info.get("current_holding") == "ICICIBANK")
+
+    # ── 9. v4.1: per-task drawdown limits ────────────────────────────────────
+    section("9. v4.1 — Per-task drawdown limits (short=5%, medium=10%, long=15%)")
+    # Manually induce 6% drawdown and test short (limit 5%) vs medium (limit 10%)
+    for term_t, limit, expect_done in [("short", 0.05, True), ("medium", 0.10, False)]:
+        sess9 = EnvSession(session_id=f"unit-perlimit-{term_t}", term=term_t)
+        n = TASK_MAX_STEPS[term_t]
+        fake9 = make_fake_episode(SYMBOLS, n, term_t)
+        # HDFCBANK underperforms: -0.09, others 0.0 → avg = -0.03
+        # alpha = -0.09 - (-0.03) = -0.06; pnl = -0.06 × 1 × 1.0 = -0.06
+        # After 1 step: capital = 0.94, drawdown = 6%
+        for s_step in fake9:
+            s_step["stocks"][0]["actual_period_return"] = -0.09
+            s_step["stocks"][1]["actual_period_return"] = 0.0
+            s_step["stocks"][2]["actual_period_return"] = 0.0
+        sess9.episode_steps = fake9
+        sess9.sector  = "banking"
+        sess9.symbols = SYMBOLS
+        sess9.current_obs = sess9._build_obs(0)
+
+        r9 = sess9.step(MultiStockAction(stock="HDFCBANK", direction="Bullish", conviction=1.0))
+        dd = r9.info.get("drawdown", 0)
+        dl = r9.info.get("drawdown_limit", limit)
+        check(f"{term_t}: drawdown={dd:.3f} > limit={dl} → done={expect_done}",
+              r9.done == expect_done,
+              f"done={r9.done}, drawdown={dd:.3f}, limit={dl}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -325,7 +431,9 @@ def run_live_tests():
     try:
         section("L1. Health")
         h = requests.get(f"{BASE}/health", timeout=5).json()
-        check("version=4.0.0", h.get("version") == "4.0.0", h.get("version"))
+        check("version=4.1.0",         h.get("version") == "4.1.0",      h.get("version"))
+        check("drawdown_limits present", "drawdown_limits" in h,          str(h.get("drawdown_limits")))
+        check("transaction_cost=0.001",  h.get("transaction_cost") == 0.001)
         print(f"  episode_steps={h.get('episode_steps')}  step_spacing={h.get('step_spacing')}")
 
         section("L2. Reset + 5-step short episode")
