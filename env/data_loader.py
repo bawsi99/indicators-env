@@ -349,28 +349,69 @@ def build_observation(symbol: str, date: str, term: str = "medium") -> Optional[
     }
 
 
+def fetch_macro_context(date: str) -> Dict[str, Any]:
+    """
+    Fetch macro context from NIFTY50 index for a given date.
+    Used for Task 3 (long-term) observations to give the agent market-wide context.
+    Returns a dict with nifty_trend, nifty_return_20d, and market_regime.
+    Falls back gracefully if NIFTY50 data is unavailable.
+    """
+    try:
+        end_dt  = pd.to_datetime(date) + timedelta(days=1)
+        start_dt = end_dt - timedelta(days=60)
+        ticker = yf.Ticker("^NSEI")
+        df = ticker.history(
+            start=start_dt.strftime("%Y-%m-%d"),
+            end=end_dt.strftime("%Y-%m-%d"),
+            auto_adjust=True,
+        )
+        if df.empty or len(df) < 20:
+            return {"nifty_trend": "Unknown", "nifty_return_20d": 0.0, "market_regime": "Unknown"}
+        df.columns = df.columns.str.lower()
+        close = df["close"]
+        lookback = min(21, len(close))
+        ret_20d = float((close.iloc[-1] - close.iloc[-lookback]) / close.iloc[-lookback])
+        trend   = "Bullish" if ret_20d > 0.02 else "Bearish" if ret_20d < -0.02 else "Neutral"
+        regime  = "trending" if abs(ret_20d) > 0.03 else "ranging"
+        return {
+            "nifty_trend":       trend,
+            "nifty_return_20d":  round(ret_20d * 100, 2),
+            "market_regime":     regime,
+        }
+    except Exception as e:
+        logger.warning(f"[DataLoader] fetch_macro_context failed for {date}: {e}")
+        return {"nifty_trend": "Unknown", "nifty_return_20d": 0.0, "market_regime": "Unknown"}
+
+
 def build_multi_step_episode(
     symbol: str,
     start_date: str,
     n_steps: int = 5,
     term: str = "medium",
     lookback_days: int = 300,
-) -> Optional[List[Tuple[Dict[str, Any], str]]]:
+    include_macro: bool = False,
+) -> Optional[List[Tuple[Dict[str, Any], str, float]]]:
     """
-    Build n_steps consecutive (observation_dict, ground_truth) pairs for one stock.
+    Build n_steps consecutive (observation_dict, ground_truth, actual_1day_return) tuples.
     Single OHLCV fetch per call — no per-step API calls.
+
     Returns list of n_steps tuples, or None if data is insufficient.
-    Each step: indicators computed from data UP TO that trading day.
-    Each GT: N-day forward return label from that trading day.
+      observation_dict     : full indicator snapshot for that trading day
+      ground_truth         : N-day forward return label (Bullish/Bearish/Neutral)
+      actual_1day_return   : next-day return fraction (used for portfolio reward)
+
+    Args:
+        include_macro: if True, fetches NIFTY50 macro context once and embeds in each obs_dict.
+                       Used for Task 3 (long-term) to give the agent market-wide awareness.
     """
-    window = TERM_WINDOWS.get(term, 20)
+    window    = TERM_WINDOWS.get(term, 20)
     threshold = TERM_THRESHOLDS.get(term, 0.025)
     try:
-        start_dt = pd.to_datetime(start_date)
+        start_dt    = pd.to_datetime(start_date)
         fetch_start = (start_dt - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         fetch_end   = (start_dt + timedelta(days=n_steps * 3 + window + 20)).strftime("%Y-%m-%d")
 
-        ticker = yf.Ticker(f"{symbol}.NS")
+        ticker  = yf.Ticker(f"{symbol}.NS")
         full_df = ticker.history(start=fetch_start, end=fetch_end, auto_adjust=True)
         if full_df.empty or len(full_df) < lookback_days // 2:
             return None
@@ -383,6 +424,9 @@ def build_multi_step_episode(
         if len(available_dates) < n_steps:
             return None
 
+        # Fetch macro context once for the whole episode (Task 3 only)
+        macro_ctx = fetch_macro_context(start_date) if include_macro else None
+
         steps = []
         for step_dt in available_dates:
             hist = full_df[full_df.index <= step_dt].tail(lookback_days)
@@ -390,22 +434,33 @@ def build_multi_step_episode(
                 return None
             indicators = compute_indicators(hist)
             cp = float(hist["close"].iloc[-1])
-            obs_dict = {
-                "symbol": symbol,
-                "date": step_dt.strftime("%Y-%m-%d"),
-                "term": term.upper(),
+            obs_dict: Dict[str, Any] = {
+                "symbol":        symbol,
+                "date":          step_dt.strftime("%Y-%m-%d"),
+                "term":          term.upper(),
                 "current_price": round(cp, 2),
-                "indicators": indicators,
+                "indicators":    indicators,
             }
-            # GT: N-day forward return from this step's date
+            if macro_ctx is not None:
+                obs_dict["macro"] = macro_ctx
+
+            # GT: N-day forward return label
             future = full_df[full_df.index > step_dt].head(window + 5)
             if len(future) < window:
                 return None
-            entry = float(hist["close"].iloc[-1])
             exit_ = float(future["close"].iloc[min(window, len(future)) - 1])
-            fwd_ret = (exit_ - entry) / entry
+            fwd_ret = (exit_ - cp) / cp
             gt = "Bullish" if fwd_ret > threshold else "Bearish" if fwd_ret < -threshold else "Neutral"
-            steps.append((obs_dict, gt))
+
+            # Actual 1-day return (next trading day's close vs today's close)
+            # Drives the portfolio reward in indicators_env.py
+            next_day = full_df[full_df.index > step_dt].head(1)
+            if len(next_day) >= 1:
+                actual_1day_return = round((float(next_day["close"].iloc[0]) - cp) / cp, 6)
+            else:
+                actual_1day_return = 0.0
+
+            steps.append((obs_dict, gt, actual_1day_return))
 
         return steps if len(steps) == n_steps else None
 
